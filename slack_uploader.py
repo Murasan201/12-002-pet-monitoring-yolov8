@@ -16,11 +16,12 @@ class SlackUploader:
 
     def __init__(self, bot_token: str):
         """
-        Initialize Slack uploader.
+        Slackアップローダーの初期化
 
         Args:
-            bot_token: Slack Bot User OAuth Token
+            bot_token: Slack Bot User OAuth Token（ボット認証トークン）
         """
+        # Slack Web APIクライアントを初期化
         self.client = WebClient(token=bot_token)
 
     def upload_files(
@@ -31,47 +32,55 @@ class SlackUploader:
         title: Optional[str] = None,
     ) -> bool:
         """
-        Upload files to Slack channel using files_upload_v2.
+        files_upload_v2を使用してSlackチャンネルにファイルをアップロード
+
+        方式A（推奨）: Slack Web APIで直接ファイルをアップロード
+        別サーバー不要で、Raspberry Piから直接Slackへ画像を送信できる
 
         Args:
-            file_paths: List of file paths to upload
-            channel: Slack channel ID or name (e.g., "#pet-monitoring")
-            text: Optional message text to accompany the files
-            title: Optional title for the upload
+            file_paths: アップロードするファイルパスのリスト
+            channel: Slackチャンネル名またはID（例: "#pet-monitoring"）
+            text: ファイルに添えるメッセージ（省略可）
+            title: アップロードのタイトル（省略可）
 
         Returns:
-            True if upload succeeded, False otherwise
+            True: アップロード成功
+            False: アップロード失敗
         """
         if not file_paths:
             print("No files to upload")
             return False
 
-        # Verify all files exist
+        # すべてのファイルが存在するか確認
         for file_path in file_paths:
             if not os.path.exists(file_path):
                 print(f"File not found: {file_path}")
                 return False
 
         try:
-            # Prepare file uploads
+            # ========== ファイルアップロードの準備 ==========
             file_uploads = []
             for file_path in file_paths:
+                # ファイルをバイナリモードで読み込み
                 with open(file_path, "rb") as f:
                     file_content = f.read()
 
+                # アップロード用のファイル情報を追加
                 file_uploads.append({
                     "file": file_content,
-                    "filename": os.path.basename(file_path),
+                    "filename": os.path.basename(file_path),  # ファイル名のみ抽出
                 })
 
-            # Upload files
+            # ========== Slack APIでファイルアップロード ==========
+            # files_upload_v2: 複数ファイルを一度にアップロードできる新API
             response = self.client.files_upload_v2(
                 channel=channel,
                 file_uploads=file_uploads,
-                initial_comment=text or "Pet detected!",
+                initial_comment=text or "Pet detected!",  # デフォルトメッセージ
                 title=title,
             )
 
+            # アップロード結果の確認
             if response["ok"]:
                 print(f"Successfully uploaded {len(file_paths)} file(s) to {channel}")
                 return True
@@ -80,24 +89,28 @@ class SlackUploader:
                 return False
 
         except SlackApiError as e:
+            # Slack API特有のエラー処理
             print(f"Slack API error: {e.response['error']}")
             return False
         except Exception as e:
+            # その他の予期しないエラー
             print(f"Unexpected error during upload: {e}")
             return False
 
     def send_message(self, channel: str, text: str) -> bool:
         """
-        Send a text message to Slack channel.
+        Slackチャンネルにテキストメッセージを送信
 
         Args:
-            channel: Slack channel ID or name
-            text: Message text
+            channel: Slackチャンネル名またはID
+            text: 送信するメッセージテキスト
 
         Returns:
-            True if message sent successfully, False otherwise
+            True: 送信成功
+            False: 送信失敗
         """
         try:
+            # chat.postMessageでテキストメッセージを送信
             response = self.client.chat_postMessage(
                 channel=channel,
                 text=text,
@@ -119,12 +132,17 @@ class SlackUploader:
 
     def test_connection(self) -> bool:
         """
-        Test Slack API connection.
+        Slack API接続のテスト
+
+        トークンが正しく設定されているか、
+        APIとの通信が正常にできるかを確認
 
         Returns:
-            True if connection successful, False otherwise
+            True: 接続成功
+            False: 接続失敗
         """
         try:
+            # auth.testで認証情報を確認
             response = self.client.auth_test()
             if response["ok"]:
                 print(f"Connected to Slack as: {response['user']}")
