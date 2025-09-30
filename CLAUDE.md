@@ -16,6 +16,8 @@ This is a pet monitoring system using YOLOv8 for object detection.
 - Use meaningful variable and function names
 - Add docstrings to all functions and classes
 - Keep functions focused and modular
+- **Comments**: Write all code comments in Japanese
+- **Comment Style**: Add beginner-friendly comments without compromising readability
 
 ## Git Commit Guidelines
 - Write clear, concise commit messages
