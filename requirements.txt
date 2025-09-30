@@ -1,0 +1,17 @@
+# Computer Vision & AI
+opencv-python>=4.8.0
+ultralytics>=8.0.0
+numpy>=1.24.0
+
+# Servo Control
+adafruit-circuitpython-pca9685>=3.4.0
+adafruit-circuitpython-servokit>=1.3.0
+
+# Slack Integration
+slack-sdk>=3.21.0
+
+# Scheduling
+schedule>=1.2.0
+
+# Configuration
+python-dotenv>=1.0.0
