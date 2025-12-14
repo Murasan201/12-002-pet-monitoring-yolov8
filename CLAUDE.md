@@ -30,9 +30,15 @@ This is a pet monitoring system using YOLOv8 for object detection.
 - Maintain test coverage
 
 ## Documentation
+- **Documentation Directory**: All project documentation, specifications, and design documents must be stored in the `docs/` directory
+- **File Organization**:
+  - Specifications: `docs/*_specification.md`
+  - Design documents: `docs/*_design.md`
+  - Implementation notes: `docs/*_notes.md`
 - Update documentation when adding new features
 - Include usage examples where appropriate
 - Keep README.md up to date
+- Write documentation in markdown format
 
 ## MCP Tools Usage
 - **Web Search**: Use Google Search agent (MCP) when you need to search for information online
