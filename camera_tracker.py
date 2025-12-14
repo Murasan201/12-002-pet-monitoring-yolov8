@@ -15,9 +15,7 @@ from typing import Optional, Tuple, List
 import cv2
 import numpy as np
 from ultralytics import YOLO
-import busio
-import board
-from adafruit_servokit import ServoKit
+import servo_control
 
 
 class CameraTracker:
@@ -59,11 +57,12 @@ class CameraTracker:
         self.cap = None  # カメラキャプチャオブジェクト（後で初期化）
 
         # サーボ制御の初期化
-        # I2C通信でPCA9685サーボドライバと接続
-        i2c = busio.I2C(board.SCL, board.SDA)
-        self.kit = ServoKit(channels=16, i2c=i2c)  # 16チャンネルのサーボキット
-        self.pan_servo = self.kit.servo[pan_channel]  # パン（左右）サーボ
-        self.tilt_servo = self.kit.servo[tilt_channel]  # チルト（上下）サーボ
+        # servo_control.pyライブラリを使用してサーボを初期化
+        self.kit = servo_control.initialize_servo_kit()
+
+        # チャンネル番号を保存（servo_control.pyの定数と一致することを確認）
+        self.pan_channel = pan_channel
+        self.tilt_channel = tilt_channel
 
         # P制御のパラメータ設定
         self.kp_pan = kp_pan  # パンの比例ゲイン（大きいほど反応が速い）
@@ -73,11 +72,11 @@ class CameraTracker:
         # 検出対象のクラス（COCOデータセットのクラスID）
         self.target_classes = [15, 16]  # 15: 猫、16: 犬
 
-        # サーボを中央位置（90度）に初期化
-        self.pan_angle = 90
-        self.tilt_angle = 90
-        self.pan_servo.angle = self.pan_angle
-        self.tilt_servo.angle = self.tilt_angle
+        # サーボを中央位置に初期化
+        # servo_control.pyの仕様: パン80度、チルト90度
+        self.pan_angle = servo_control.PAN_CENTER
+        self.tilt_angle = servo_control.TILT_CENTER
+        servo_control.set_center_position(self.kit)
         time.sleep(0.5)  # サーボが位置に到達するまで待機
 
     def _open_camera(self) -> bool:
@@ -172,16 +171,34 @@ class CameraTracker:
         if abs(error_x) > self.deadband:
             # パンの制御量を計算（マイナスは座標系の向きを調整）
             delta_pan = -self.kp_pan * error_x
-            # 角度を更新（0〜180度の範囲に制限）
-            self.pan_angle = max(0, min(180, self.pan_angle + delta_pan))
-            self.pan_servo.angle = self.pan_angle
+            # 角度を更新（servo_control.pyの動作範囲: 35〜125度）
+            new_pan_angle = self.pan_angle + delta_pan
+            new_pan_angle = max(servo_control.PAN_LEFT,
+                              min(servo_control.PAN_RIGHT, new_pan_angle))
+
+            # servo_control.pyを使用して角度を設定
+            try:
+                servo_control.set_pan_angle(self.kit, new_pan_angle)
+                self.pan_angle = new_pan_angle
+            except ValueError as e:
+                # 範囲外エラーの場合はログ出力（実際は範囲制限済みなので発生しない）
+                print(f"Pan angle error: {e}")
 
         if abs(error_y) > self.deadband:
             # チルトの制御量を計算
             delta_tilt = self.kp_tilt * error_y
-            # 角度を更新（0〜180度の範囲に制限）
-            self.tilt_angle = max(0, min(180, self.tilt_angle + delta_tilt))
-            self.tilt_servo.angle = self.tilt_angle
+            # 角度を更新（servo_control.pyの動作範囲: 45〜135度）
+            new_tilt_angle = self.tilt_angle + delta_tilt
+            new_tilt_angle = max(servo_control.TILT_DOWN,
+                                min(servo_control.TILT_UP, new_tilt_angle))
+
+            # servo_control.pyを使用して角度を設定
+            try:
+                servo_control.set_tilt_angle(self.kit, new_tilt_angle)
+                self.tilt_angle = new_tilt_angle
+            except ValueError as e:
+                # 範囲外エラーの場合はログ出力（実際は範囲制限済みなので発生しない）
+                print(f"Tilt angle error: {e}")
 
     def scan_and_track(
         self,
@@ -217,15 +234,21 @@ class CameraTracker:
             detected = False
 
             # チルト（上下）を段階的に変更
-            for tilt_angle in np.linspace(30, 150, scan_steps_tilt):
+            # servo_control.pyの動作範囲: 45〜135度
+            for tilt_angle in np.linspace(servo_control.TILT_DOWN,
+                                         servo_control.TILT_UP,
+                                         scan_steps_tilt):
                 self.tilt_angle = tilt_angle
-                self.tilt_servo.angle = tilt_angle
+                servo_control.set_tilt_angle(self.kit, tilt_angle, smooth=False)
                 time.sleep(0.3)  # サーボが安定するまで待機
 
                 # パン（左右）を段階的に変更
-                for pan_angle in np.linspace(0, 180, scan_steps_pan):
+                # servo_control.pyの動作範囲: 35〜125度
+                for pan_angle in np.linspace(servo_control.PAN_LEFT,
+                                            servo_control.PAN_RIGHT,
+                                            scan_steps_pan):
                     self.pan_angle = pan_angle
-                    self.pan_servo.angle = pan_angle
+                    servo_control.set_pan_angle(self.kit, pan_angle, smooth=False)
                     time.sleep(0.2)  # サーボが安定するまで待機
 
                     # フレームを取得して検出を実行
@@ -353,11 +376,10 @@ class CameraTracker:
         return file_paths
 
     def reset_position(self):
-        """サーボを中央位置（90度）にリセット"""
-        self.pan_angle = 90
-        self.tilt_angle = 90
-        self.pan_servo.angle = self.pan_angle
-        self.tilt_servo.angle = self.tilt_angle
+        """サーボを中央位置にリセット（パン80度、チルト90度）"""
+        self.pan_angle = servo_control.PAN_CENTER
+        self.tilt_angle = servo_control.TILT_CENTER
+        servo_control.set_center_position(self.kit)
 
     def cleanup(self):
         """リソースのクリーンアップ（カメラを閉じてサーボをリセット）"""
