@@ -1,11 +1,13 @@
 # オブジェクト検出・追跡仕様書
 
-**バージョン**: 1.0
+**バージョン**: 1.1
 **作成日**: 2025-12-14
+**更新日**: 2025-12-17
 **プロジェクト名**: 12-002-pet-monitoring-yolov8
 **関連ドキュメント**:
 - `servo_control_specification.md` - サーボ制御仕様
 - `raspberry_pi_5_pan_tilt_追跡制御_検討レポート（pca_9685_＋p制御）rev_4.md` - P制御設計レポート
+- `p_control_tracking_technical_report.md` - P制御追跡 技術検討レポート
 
 ---
 
@@ -36,6 +38,7 @@ P制御で目標角度計算
 - **リアルタイム性**: 10Hz以下の更新頻度で十分（数分単位のイベント駆動も可）
 - **制御方式**: 単純P制御（比例制御のみ、I・D成分は不使用）
 - **安定性**: デッドバンド機構による微小振動防止
+- **安定性**: 角度制限による急峻な動作の防止
 - **検出精度**: YOLOv8の信頼度ベース検出
 
 ---
@@ -55,17 +58,18 @@ YOLOv8はUltralyticsが開発した最新バージョンで、高速かつ高精
 ### 2.2 使用モデル
 | 項目 | 仕様 |
 |------|------|
-| モデル | YOLOv8n (nano) |
-| モデルファイル | yolov8n.pt |
+| モデル | YOLOv8s (Hailo-8L最適化版) |
+| モデルファイル | yolov8s_h8l.hef |
 | 学習データセット | COCO (Common Objects in Context) |
 | 検出可能クラス数 | 80クラス |
 | 入力サイズ | 640x640 (自動リサイズ) |
-| 推論速度 | Raspberry Pi 5で約1～3 FPS |
+| AIアクセラレータ | Hailo-8L使用 |
+| 推論速度 | 10+ FPS（Hailo-8Lアクセラレーション時） |
 
-**YOLOv8nを選択する理由**:
-- 最軽量モデルで、Raspberry Pi 5でも動作可能
-- ペット検出には十分な精度
-- メモリ消費量が少ない
+**YOLOv8s + Hailo-8Lを選択する理由**:
+- Hailo-8Lアクセラレータによる高速推論
+- Raspberry Pi 5でリアルタイム検出が可能
+- ペット検出に十分な精度と速度のバランス
 
 ### 2.3 検出対象クラス
 
@@ -77,7 +81,8 @@ COCOデータセットのクラスID:
 
 **実装**:
 ```python
-self.target_classes = [15, 16]  # 猫と犬のみ
+# Hailo8Lライブラリで初期化時に指定
+self.detector = YOLODetector(model_path, target_classes=['cat', 'dog'])
 ```
 
 ### 2.4 検出プロセス
@@ -85,24 +90,18 @@ self.target_classes = [15, 16]  # 猫と犬のみ
 #### 2.4.1 検出の流れ
 ```python
 def _detect_pet(self, frame: np.ndarray) -> Optional[Tuple[int, int, int, int]]:
-    # 1. YOLOv8で推論実行
-    results = self.model(frame, verbose=False)
+    # Hailo-8L検出器で物体検出を実行（犬・猫のみフィルタリング済み）
+    detections = self.detector.detect(frame)
 
-    # 2. 検出結果から最も信頼度の高いペットを選択
     best_box = None
     best_conf = 0.0
 
-    for result in results:
-        for box in result.boxes:
-            cls = int(box.cls[0])      # クラスID
-            conf = float(box.conf[0])   # 信頼度
-
-            # ターゲットクラス（犬・猫）かつ最高信頼度
-            if cls in self.target_classes and conf > best_conf:
-                best_conf = conf
-                xyxy = box.xyxy[0].cpu().numpy()
-                best_box = (int(xyxy[0]), int(xyxy[1]),
-                           int(xyxy[2]), int(xyxy[3]))
+    for det in detections:
+        conf = det['confidence']
+        if conf > best_conf:
+            best_conf = conf
+            bbox = det['bbox']  # [x1, y1, x2, y2]
+            best_box = (int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3]))
 
     return best_box  # (x1, y1, x2, y2) or None
 ```
@@ -181,11 +180,19 @@ error_y = pet_center_y - center_y  # 垂直方向の誤差（ピクセル）
 ```python
 delta_pan = -Kp_pan * error_x   # パンの変化量（度）
 delta_tilt = Kp_tilt * error_y  # チルトの変化量（度）
+
+# 角度変化量の制限（急峻な動きを防止）
+delta_pan = max(-delta_angle_max, min(delta_angle_max, delta_pan))
+delta_tilt = max(-delta_angle_max, min(delta_angle_max, delta_tilt))
 ```
 
 **符号の調整**:
 - パンは **マイナス符号** を付ける（座標系の向きを調整）
 - チルトは **プラス符号** のまま
+
+**角度変化量の制限**:
+- 1回の更新での角度変化を制限することで、急峻な動作を防止
+- サーボ内部制御との干渉を低減し、オーバーシュートを防止
 
 #### 3.2.3 角度の更新
 ```python
@@ -208,9 +215,13 @@ tilt_servo.angle = new_tilt_angle
 
 **実装**:
 ```python
-DEADBAND = 10  # ピクセル
+# デッドバンドが未指定の場合は画面幅の4%を使用
+if deadband is None:
+    self.deadband = int(0.04 * frame_width)  # 640px → 25px
+else:
+    self.deadband = deadband
 
-if abs(error_x) > DEADBAND:
+if abs(error_x) > self.deadband:
     # 誤差が閾値を超えた場合のみ制御
     delta_pan = -Kp_pan * error_x
     pan_angle += delta_pan
@@ -219,8 +230,13 @@ else:
     pass
 ```
 
+**デッドバンドの設計根拠**:
+- 画面幅の3～5%を推奨（技術検討レポート参照）
+- YOLOの検出揺らぎ（数px～数十px）に対する過剰応答を抑止
+- 中心付近で安定した挙動を実現
+
 **効果**:
-- ±10ピクセル以内の誤差は無視
+- デッドバンド以内の誤差は無視
 - サーボの無駄な動作を削減
 - 消費電力削減
 - 機構への負荷軽減
@@ -231,7 +247,8 @@ else:
 |----------|------------|------|
 | Kp_pan | 0.02 | パン制御の比例ゲイン |
 | Kp_tilt | 0.02 | チルト制御の比例ゲイン |
-| DEADBAND | 10 px | 不感帯の幅 |
+| deadband | None（画面幅の4%） | 不感帯の幅 |
+| delta_angle_max | 3.0度 | 1回の更新での最大角度変化量 |
 
 #### 3.4.1 Kpの調整ガイド
 
@@ -258,6 +275,30 @@ Kp ≈ (画像幅[px] / 可動角[deg]) × 減衰係数
 - オーバーシュートなし
 - 振動なし
 - 1～2秒で中央に収束
+
+#### 3.4.2 角度制限（Δθ_max）の調整ガイド
+
+**目的**:
+- 大誤差時の急峻な指令を抑止
+- サーボ内部制御との干渉を低減
+- オーバーシュートの防止
+
+**効果**:
+- 1回の更新で変化させる角度に上限を設けることで、急激な動作を防止
+- 非リアルタイムOS（Linux）環境でも安定した挙動を実現
+- サーボの内部制御ループとの干渉を最小化
+
+**調整手順**:
+1. **delta_angle_max = 3.0度** から開始（推奨初期値）
+2. 追跡動作を観察
+   - 追従が遅すぎる場合: 値を増やす（4.0度まで）
+   - オーバーシュート・振動が発生する場合: 値を減らす（2.0度まで）
+3. デッドバンド近傍で自然に減速する挙動を確認
+
+**設計根拠**:
+- 技術検討レポート（`p_control_tracking_technical_report.md`）参照
+- SG90クラスのサーボでは 2～4度/update を推奨
+- 周期ジッタの影響を吸収し、安定性を向上
 
 ### 3.5 更新周期
 
@@ -515,7 +556,7 @@ pet_20251214_143026_123_3.jpg
 ```python
 def __init__(
     self,
-    model_path: str = "yolov8n.pt",
+    model_path: str = "models/yolov8s_h8l.hef",
     camera_index: int = 0,
     frame_width: int = 640,
     frame_height: int = 480,
@@ -523,13 +564,14 @@ def __init__(
     tilt_channel: int = 1,
     kp_pan: float = 0.02,
     kp_tilt: float = 0.02,
-    deadband: int = 10,
+    deadband: Optional[int] = None,
+    delta_angle_max: float = 3.0,
 )
 ```
 
 | パラメータ | 型 | デフォルト値 | 説明 |
 |----------|---|------------|------|
-| model_path | str | "yolov8n.pt" | YOLOv8モデルファイルのパス |
+| model_path | str | "models/yolov8s_h8l.hef" | YOLOv8 Hailo-8Lモデルファイルのパス |
 | camera_index | int | 0 | カメラデバイスのインデックス |
 | frame_width | int | 640 | フレーム幅 |
 | frame_height | int | 480 | フレーム高さ |
@@ -537,7 +579,8 @@ def __init__(
 | tilt_channel | int | 1 | チルトサーボのチャンネル |
 | kp_pan | float | 0.02 | パンのP制御ゲイン |
 | kp_tilt | float | 0.02 | チルトのP制御ゲイン |
-| deadband | int | 10 | デッドバンド幅（px） |
+| deadband | Optional[int] | None | デッドバンド幅（px）、Noneの場合は画面幅の4% |
+| delta_angle_max | float | 3.0 | 1回の更新での最大角度変化量（度） |
 
 ### 7.2 scan_and_track()
 
@@ -607,10 +650,11 @@ from camera_tracker import CameraTracker
 
 # トラッカー初期化
 tracker = CameraTracker(
-    model_path="yolov8n.pt",
+    model_path="models/yolov8s_h8l.hef",
     kp_pan=0.02,
     kp_tilt=0.02,
-    deadband=10
+    deadband=None,  # 画面幅の4%を自動計算
+    delta_angle_max=3.0
 )
 
 # スキャン→追跡
@@ -700,15 +744,22 @@ detected = tracker.scan_and_track(
 **原因**:
 - Kpが大きすぎる
 - デッドバンドが小さすぎる
+- delta_angle_maxが大きすぎる
 
 **対処**:
 ```python
 tracker = CameraTracker(
     kp_pan=0.01,   # ゲインを下げる
     kp_tilt=0.01,
-    deadband=15    # デッドバンドを広げる
+    deadband=None,  # デフォルト（画面幅の4%）を使用
+    delta_angle_max=2.0  # 角度制限を厳しくする
 )
 ```
+
+**調整の優先順位**:
+1. まずdelta_angle_maxを下げる（3.0 → 2.0度）
+2. それでも不安定な場合、Kpを下げる
+3. 最後の手段としてdeadbandを広げる
 
 ### 10.3 追跡が遅い（応答が鈍い）
 
@@ -764,7 +815,8 @@ YOLOv8に加えて、追跡専用アルゴリズム（DeepSORT等）を導入。
 ### 12.1 関連ドキュメント
 - `servo_control_specification.md` - サーボ制御仕様
 - `pet_monitoring_requirements.md` - 要件定義書
-- `raspberry_pi_5_pan_tilt_追跡制御_検討レポート（pca_9685_＋p制御）rev_4.md` - P制御設計
+- `raspberry_pi_5_pan_tilt_追跡制御_検討レポート（pca_9685_＋p制御）rev_4.md` - P制御設計レポート
+- `p_control_tracking_technical_report.md` - P制御追跡 技術検討レポート（デッドバンド・角度制限の設計根拠）
 
 ### 12.2 外部リソース
 - **YOLOv8公式**: https://docs.ultralytics.com/
@@ -779,3 +831,4 @@ YOLOv8に加えて、追跡専用アルゴリズム（DeepSORT等）を導入。
 | バージョン | 日付 | 変更内容 |
 |-----------|------|---------|
 | 1.0 | 2025-12-14 | 初版作成 |
+| 1.1 | 2025-12-17 | Hailo-8Lライブラリ対応、角度制限（delta_angle_max）追加、デッドバンド動的計算対応、技術検討レポート追加 |

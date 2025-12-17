@@ -1,7 +1,7 @@
 # Computer Vision & AI
 opencv-python>=4.8.0
-ultralytics>=8.0.0
 numpy>=1.24.0
+# Note: HailoRT SDK and Picamera2 are system packages (accessed via --system-site-packages)
 
 # Servo Control
 adafruit-circuitpython-pca9685>=3.4.0

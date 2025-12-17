@@ -73,6 +73,69 @@
 
 ---
 
+### 5. P制御追跡 技術検討レポート
+**ファイル**: [`p_control_tracking_technical_report.md`](./p_control_tracking_technical_report.md)
+
+**概要**: 非リアルタイムOS環境でのP制御追跡における安定化手法の技術検討
+
+**主な内容**:
+- Linux + YOLO推論環境での制御上の制約
+- デッドバンド（不感帯）の設計指針と推奨値
+- 角度制限（角度変化量制限）の設計指針と推奨値
+- 推奨制御アルゴリズム（擬似コード付き）
+- チューニング手順
+- 想定される失敗モードと対策
+
+**対象読者**: P制御パラメータのチューニングを行う開発者、追跡機能の安定化を検討する開発者
+
+---
+
+### 6. トラブルシューティング
+**ファイル**: [`TROUBLESHOOTING.md`](./TROUBLESHOOTING.md)
+
+**概要**: 環境構築・テスト・運用中に発生したエラーと解決策のナレッジベース
+
+**主な内容**:
+- 環境構築時のエラーと解決策
+- Hailo-8L AIアクセラレータ関連の問題
+- カメラ接続・撮影関連の問題
+- サーボ制御関連の問題
+- 物体検出・追跡関連の問題
+
+**対象読者**: 環境構築を行う開発者、エラー発生時のトラブルシューティング
+
+---
+
+### 7. セットアップ手順書
+**ファイル**: [`SETUP_GUIDE.md`](./SETUP_GUIDE.md)
+
+**概要**: 書籍掲載用のセットアップ手順を詳細に記録
+
+**主な内容**:
+- 前提条件（ハードウェア構成、ソフトウェア要件）
+- ステップバイステップのセットアップ手順
+- 各ステップの詳細解説と期待される出力
+- 動作確認方法
+
+**対象読者**: Raspberry Pi初心者〜中級者、書籍読者
+
+---
+
+### 8. 参考文献
+**ファイル**: [`REFERENCES.md`](./REFERENCES.md)
+
+**概要**: 書籍掲載用の参考文献リスト
+
+**主な内容**:
+- 公式ドキュメント（Raspberry Pi、Hailo、OpenCV、Adafruit）
+- GitHubリポジトリ
+- 技術記事・チュートリアル
+- データセット
+
+**対象読者**: 書籍執筆者、詳細情報を求める開発者
+
+---
+
 ## 📁 ドキュメント体系
 
 ```
@@ -81,7 +144,11 @@ docs/
 ├── pet_monitoring_requirements.md                                          # 要件定義書
 ├── raspberry_pi_5_pan_tilt_追跡制御_検討レポート（pca_9685_＋p制御）rev_4.md # P制御設計レポート
 ├── servo_control_specification.md                                          # サーボ制御仕様
-└── detection_and_tracking_specification.md                                 # 検出・追跡仕様
+├── detection_and_tracking_specification.md                                 # 検出・追跡仕様
+├── p_control_tracking_technical_report.md                                  # P制御追跡 技術検討レポート
+├── TROUBLESHOOTING.md                                                      # トラブルシューティング
+├── SETUP_GUIDE.md                                                          # セットアップ手順書
+└── REFERENCES.md                                                           # 参考文献
 ```
 
 ---
@@ -99,9 +166,19 @@ docs/
 
 ## 📚 参照プロジェクト
 
-本プロジェクトは、以下のプロジェクトで開発されたサーボ制御ライブラリを使用しています：
+本プロジェクトは、以下のプロジェクトで開発されたライブラリを使用しています：
 
-**12-001-rpi-pan-tilt-camera-mount**
+### 11-002-raspi-hailo8l-yolo-detector（物体検出）
+Hailo-8L AIアクセラレータを使用したYOLO物体検出ライブラリ
+- GitHub: https://github.com/Murasan201/11-002-raspi-hailo8l-yolo-detector
+- ローカル参照: `../reference/11-002-raspi-hailo8l-yolo-detector/`
+- **ライブラリAPI**: `../reference/11-002-raspi-hailo8l-yolo-detector/docs/LIBRARY_API.md` ← **実装時は必ず参照**
+- 要件定義書: `../reference/11-002-raspi-hailo8l-yolo-detector/docs/11_002_raspi_hailo_8_l_yolo_detector.md`
+- セットアップ: `../reference/11-002-raspi-hailo8l-yolo-detector/docs/SETUP_GUIDE.md`
+- トラブルシューティング: `../reference/11-002-raspi-hailo8l-yolo-detector/docs/TROUBLESHOOTING.md`
+
+### 12-001-rpi-pan-tilt-camera-mount（サーボ制御）
+パン・チルトカメラマウントのサーボ制御ライブラリ
 - GitHub: https://github.com/Murasan201/12-001-rpi-pan-tilt-camera-mount
 - ローカル参照: `../reference/12-001-rpi-pan-tilt-camera-mount/`
 - 仕様書: `../reference/12-001-rpi-pan-tilt-camera-mount/docs/specification.md`
@@ -125,6 +202,13 @@ docs/
 ### 検出・追跡の実装・修正を行う場合
 1. `detection_and_tracking_specification.md` - 検出・追跡仕様
 2. `raspberry_pi_5_pan_tilt_追跡制御_検討レポート（pca_9685_＋p制御）rev_4.md` - P制御の設計根拠
+3. `p_control_tracking_technical_report.md` - P制御追跡の技術検討（デッドバンド・角度制限）
+
+### Hailo8L物体検出の実装・修正を行う場合
+1. `../reference/11-002-raspi-hailo8l-yolo-detector/docs/LIBRARY_API.md` - **ライブラリAPI（実装時必須）**
+2. `../reference/11-002-raspi-hailo8l-yolo-detector/docs/11_002_raspi_hailo_8_l_yolo_detector.md` - 要件定義書
+3. `../reference/11-002-raspi-hailo8l-yolo-detector/docs/SETUP_GUIDE.md` - セットアップ手順
+4. `../reference/11-002-raspi-hailo8l-yolo-detector/README.md` - 使用方法
 
 ---
 
@@ -156,4 +240,8 @@ docs/
 
 | 日付 | 変更内容 |
 |------|---------|
+| 2025-12-17 | セットアップ手順書（SETUP_GUIDE.md）、参考文献（REFERENCES.md）を追加 |
+| 2025-12-17 | トラブルシューティングドキュメント（TROUBLESHOOTING.md）を追加 |
+| 2025-12-17 | P制御追跡 技術検討レポート（p_control_tracking_technical_report.md）を追加 |
+| 2025-12-17 | 参照プロジェクトに11-002-raspi-hailo8l-yolo-detector（Hailo8L物体検出）を追加 |
 | 2025-12-14 | 初版作成（README、サーボ制御仕様書、検出・追跡仕様書） |
