@@ -89,22 +89,83 @@ Required configuration:
 
 ## Usage
 
-### Test the System
+### Run Camera Tracker (Standalone)
 
-Before running the full monitoring system, test each component:
+Test the camera tracking system with the `camera_tracker.py` script:
 
 ```bash
-python3 main.py
+# Basic execution (default: detect cats and dogs, track for 8 seconds)
+python3 camera_tracker.py
+
+# Display video while running
+python3 camera_tracker.py --display
+
+# Continuous mode (press Ctrl+C or 'q' to stop)
+python3 camera_tracker.py --display --continuous
 ```
 
-The system will automatically run component tests on startup:
-- Slack connection
-- Camera functionality
-- Servo operation
+### Changing Detection Target
 
-### Run Monitoring System
+By default, the system detects **cats** and **dogs**. You can change this via command line:
 
-Start the monitoring system:
+```bash
+# List all available class names
+python3 camera_tracker.py --list-classes
+
+# Detect only person
+python3 camera_tracker.py --classes person
+
+# Detect person, cat, and dog
+python3 camera_tracker.py --classes person cat dog
+```
+
+### Command Line Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `--model` | str | `models/yolov8s_h8l.hef` | HEF model file path |
+| `--classes` | str (multiple) | `cat dog` | Target class names (space-separated) |
+| `--list-classes` | flag | - | Show available class names and exit |
+| `--width` | int | `640` | Camera image width (pixels) |
+| `--height` | int | `480` | Camera image height (pixels) |
+| `--flip` | flag | - | Flip camera image vertically |
+| `--kp-pan` | float | `0.01` | Proportional gain for pan control |
+| `--kp-tilt` | float | `0.01` | Proportional gain for tilt control |
+| `--deadband` | int | `40` | Deadband in pixels |
+| `--delta-max` | float | `1.0` | Max angle change per update (degrees) |
+| `--scan-pan` | int | `9` | Pan axis scan steps |
+| `--scan-tilt` | int | `5` | Tilt axis scan steps |
+| `--duration` | float | `8.0` | Tracking duration (seconds) |
+| `--fps` | float | `5.0` | Tracking loop update frequency (Hz) |
+| `--continuous` | flag | - | Continuous mode (Ctrl+C or 'q' to exit) |
+| `--display` | flag | - | Display camera video in window |
+| `--log` | str | None | Debug log CSV file path |
+| `--capture` | flag | - | Capture images after tracking |
+| `--capture-dir` | str | `captures` | Capture save directory |
+| `--capture-count` | int | `3` | Number of images to capture |
+
+### Usage Examples
+
+```bash
+# Adjust P-control parameters (faster response)
+python3 camera_tracker.py --kp-pan 0.02 --kp-tilt 0.02 --deadband 20
+
+# Output debug log
+python3 camera_tracker.py --log tracking.csv --display
+
+# Capture images after tracking
+python3 camera_tracker.py --capture --capture-dir ./images --capture-count 5
+
+# For upside-down mounted camera
+python3 camera_tracker.py --flip
+
+# High resolution
+python3 camera_tracker.py --width 1280 --height 720
+```
+
+### Run Full Monitoring System
+
+Start the full monitoring system with Slack notifications:
 
 ```bash
 python3 main.py

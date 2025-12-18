@@ -85,6 +85,52 @@ COCOデータセットのクラスID:
 self.detector = YOLODetector(model_path, target_classes=['cat', 'dog'])
 ```
 
+#### 2.3.1 検出対象クラスの変更方法
+
+デフォルトでは犬（dog）と猫（cat）を検出対象としていますが、コマンドラインオプションで変更可能です。
+
+**使用可能なクラス一覧を表示**:
+```bash
+python camera_tracker.py --list-classes
+```
+
+**変更例**:
+```bash
+# 人物のみを検出
+python camera_tracker.py --classes person
+
+# 人物・犬・猫を検出
+python camera_tracker.py --classes person cat dog
+
+# 鳥を検出
+python camera_tracker.py --classes bird
+```
+
+**プログラムからの変更**:
+```python
+from camera_tracker import CameraTracker
+
+# 人物を検出対象に設定
+tracker = CameraTracker(
+    model_path="models/yolov8s_h8l.hef",
+    target_classes=['person']
+)
+
+# 複数クラスを検出対象に設定
+tracker = CameraTracker(
+    model_path="models/yolov8s_h8l.hef",
+    target_classes=['person', 'cat', 'dog']
+)
+```
+
+**主なCOCOクラス（ペット監視で有用なもの）**:
+| クラス名 | 説明 | 用途例 |
+|---------|------|-------|
+| person | 人物 | 不審者検知、来客検知 |
+| cat | 猫 | ペット監視 |
+| dog | 犬 | ペット監視 |
+| bird | 鳥 | 小動物監視 |
+
 ### 2.4 検出プロセス
 
 #### 2.4.1 検出の流れ
@@ -245,10 +291,27 @@ else:
 
 | パラメータ | デフォルト値 | 説明 |
 |----------|------------|------|
-| Kp_pan | 0.02 | パン制御の比例ゲイン |
-| Kp_tilt | 0.02 | チルト制御の比例ゲイン |
-| deadband | None（画面幅の4%） | 不感帯の幅 |
-| delta_angle_max | 3.0度 | 1回の更新での最大角度変化量 |
+| Kp_pan | 0.01 | パン制御の比例ゲイン |
+| Kp_tilt | 0.01 | チルト制御の比例ゲイン |
+| deadband | 40ピクセル | 不感帯の幅 |
+| delta_angle_max | 1.0度 | 1回の更新での最大角度変化量 |
+| fps | 5.0 Hz | 追跡ループの更新頻度 |
+
+**実機検証済みパラメータ（2025-12-18）**:
+
+上記のデフォルト値は実機テストで安定動作を確認したパラメータです。
+
+| パラメータ | 初期値 | 最終値 | 調整理由 |
+|-----------|--------|--------|---------|
+| Kp | 0.02 | 0.01 | ハンチング（発振）防止 |
+| deadband | 25px | 40px | 微小振動の抑制 |
+| delta_angle_max | 3.0° | 1.0° | オーバーシュート防止 |
+| fps | 10 Hz | 5 Hz | サーボ安定化時間の確保 |
+
+これらのパラメータは以下の条件で検証されました：
+- ハードウェア: Raspberry Pi 5 + PCA9685 + SG90サーボ
+- 検出対象: 人間（person）
+- カメラ: Raspberry Pi Camera Module V3（上下反転設置）
 
 #### 3.4.1 Kpの調整ガイド
 
@@ -304,14 +367,14 @@ Kp ≈ (画像幅[px] / 可動角[deg]) × 減衰係数
 
 | 項目 | 仕様 |
 |------|------|
-| 追跡ループ周波数 | 10 Hz (デフォルト) |
-| フレーム間隔 | 0.1 秒 |
+| 追跡ループ周波数 | 5 Hz (デフォルト) |
+| フレーム間隔 | 0.2 秒 |
 | 最小周波数 | 1 Hz 以下でも動作可能 |
 
 **実装**:
 ```python
-tracking_fps = 10.0
-frame_delay = 1.0 / tracking_fps  # 0.1秒
+tracking_fps = 5.0
+frame_delay = 1.0 / tracking_fps  # 0.2秒
 
 while tracking:
     loop_start = time.time()
@@ -418,7 +481,7 @@ return False  # 検出失敗
 | パラメータ | デフォルト値 | 説明 |
 |----------|------------|------|
 | tracking_duration | 8.0秒 | 追跡を継続する時間 |
-| tracking_fps | 10 Hz | 追跡ループの更新周波数 |
+| tracking_fps | 5 Hz | 追跡ループの更新周波数 |
 
 **実装例**:
 ```python
@@ -577,10 +640,10 @@ def __init__(
 | frame_height | int | 480 | フレーム高さ |
 | pan_channel | int | 0 | パンサーボのチャンネル |
 | tilt_channel | int | 1 | チルトサーボのチャンネル |
-| kp_pan | float | 0.02 | パンのP制御ゲイン |
-| kp_tilt | float | 0.02 | チルトのP制御ゲイン |
-| deadband | Optional[int] | None | デッドバンド幅（px）、Noneの場合は画面幅の4% |
-| delta_angle_max | float | 3.0 | 1回の更新での最大角度変化量（度） |
+| kp_pan | float | 0.01 | パンのP制御ゲイン |
+| kp_tilt | float | 0.01 | チルトのP制御ゲイン |
+| deadband | Optional[int] | 40 | デッドバンド幅（px） |
+| delta_angle_max | float | 1.0 | 1回の更新での最大角度変化量（度） |
 
 ### 7.2 scan_and_track()
 
@@ -648,13 +711,13 @@ def cleanup(self) -> None
 ```python
 from camera_tracker import CameraTracker
 
-# トラッカー初期化
+# トラッカー初期化（実機検証済みパラメータ）
 tracker = CameraTracker(
     model_path="models/yolov8s_h8l.hef",
-    kp_pan=0.02,
-    kp_tilt=0.02,
-    deadband=None,  # 画面幅の4%を自動計算
-    delta_angle_max=3.0
+    kp_pan=0.01,
+    kp_tilt=0.01,
+    deadband=40,
+    delta_angle_max=1.0
 )
 
 # スキャン→追跡
@@ -700,9 +763,93 @@ detected = tracker.scan_and_track(
 
 ---
 
-## 9. パフォーマンス最適化
+## 9. コマンドラインパラメータ一覧
 
-### 9.1 YOLOv8推論速度
+`camera_tracker.py`は以下のコマンドラインパラメータをサポートしています。
+
+### 9.1 基本パラメータ
+
+| パラメータ | 型 | デフォルト値 | 説明 |
+|-----------|------|-------------|------|
+| `--model` | str | `models/yolov8s_h8l.hef` | HEFモデルファイルのパス |
+| `--classes` | str (複数) | `cat dog` | 検出対象のクラス名（スペース区切り） |
+| `--list-classes` | flag | - | 使用可能なクラス名一覧を表示して終了 |
+
+### 9.2 カメラパラメータ
+
+| パラメータ | 型 | デフォルト値 | 説明 |
+|-----------|------|-------------|------|
+| `--width` | int | `640` | カメラ画像の幅（ピクセル） |
+| `--height` | int | `480` | カメラ画像の高さ（ピクセル） |
+| `--flip` | flag | - | カメラ映像を上下反転（逆さま設置時） |
+
+### 9.3 P制御パラメータ
+
+| パラメータ | 型 | デフォルト値 | 説明 |
+|-----------|------|-------------|------|
+| `--kp-pan` | float | `0.01` | パン制御の比例ゲイン（大きいほど応答が速い） |
+| `--kp-tilt` | float | `0.01` | チルト制御の比例ゲイン |
+| `--deadband` | int | `40` | 不感帯（ピクセル）。この範囲内の誤差は無視 |
+| `--delta-max` | float | `1.0` | 1回の更新での最大角度変化量（度） |
+
+### 9.4 スキャン・追跡パラメータ
+
+| パラメータ | 型 | デフォルト値 | 説明 |
+|-----------|------|-------------|------|
+| `--scan-pan` | int | `9` | パン軸のスキャンステップ数 |
+| `--scan-tilt` | int | `5` | チルト軸のスキャンステップ数 |
+| `--duration` | float | `8.0` | 追跡時間（秒）。`--continuous`使用時は無視 |
+| `--fps` | float | `5.0` | 追跡ループの更新頻度（Hz） |
+| `--continuous` | flag | - | 継続実行モード（Ctrl+C または qキーで終了） |
+
+### 9.5 表示・ログパラメータ
+
+| パラメータ | 型 | デフォルト値 | 説明 |
+|-----------|------|-------------|------|
+| `--display` | flag | - | カメラ映像をウィンドウに表示（qキーで終了） |
+| `--log` | str | なし | デバッグログのCSVファイルパス |
+
+### 9.6 画像キャプチャパラメータ
+
+| パラメータ | 型 | デフォルト値 | 説明 |
+|-----------|------|-------------|------|
+| `--capture` | flag | - | 追跡後に画像をキャプチャする |
+| `--capture-dir` | str | `captures` | キャプチャ画像の保存先ディレクトリ |
+| `--capture-count` | int | `3` | キャプチャする画像の枚数 |
+
+### 9.7 使用例
+
+```bash
+# 基本的な実行（デフォルト設定：犬・猫を検出、8秒追跡）
+python camera_tracker.py
+
+# 人物を検出対象に変更
+python camera_tracker.py --classes person
+
+# 映像を表示しながら継続実行
+python camera_tracker.py --display --continuous
+
+# P制御パラメータを調整（応答を速くする）
+python camera_tracker.py --kp-pan 0.02 --kp-tilt 0.02 --deadband 20
+
+# デバッグログを出力
+python camera_tracker.py --log tracking.csv --display
+
+# 追跡後に画像をキャプチャ
+python camera_tracker.py --capture --capture-dir ./images --capture-count 5
+
+# カメラを逆さまに設置した場合
+python camera_tracker.py --flip
+
+# 高解像度で実行
+python camera_tracker.py --width 1280 --height 720
+```
+
+---
+
+## 10. パフォーマンス最適化
+
+### 10.1 YOLOv8推論速度
 
 | デバイス | FPS | 備考 |
 |---------|-----|------|
@@ -715,7 +862,7 @@ detected = tracker.scan_and_track(
 - 入力サイズを小さくする（320x320など）
 - フレームスキップ（2フレームに1回推論）
 
-### 9.2 メモリ使用量
+### 10.2 メモリ使用量
 
 | 項目 | 使用量 |
 |------|--------|
@@ -725,9 +872,9 @@ detected = tracker.scan_and_track(
 
 ---
 
-## 10. トラブルシューティング
+## 11. トラブルシューティング
 
-### 10.1 ペットが検出されない
+### 11.1 ペットが検出されない
 
 **原因**:
 - 照明が暗い
@@ -739,29 +886,45 @@ detected = tracker.scan_and_track(
 - カメラとペットの距離を調整
 - スキャンステップ数を増やす
 
-### 10.2 追跡が不安定（振動する）
+### 11.2 追跡が不安定（振動する・ハンチング）
 
 **原因**:
 - Kpが大きすぎる
 - デッドバンドが小さすぎる
 - delta_angle_maxが大きすぎる
+- FPSが高すぎる（サーボが安定する前に次の指令が来る）
 
-**対処**:
+**対処（実機検証済み）**:
 ```python
 tracker = CameraTracker(
-    kp_pan=0.01,   # ゲインを下げる
+    kp_pan=0.01,   # ゲインを半分に
     kp_tilt=0.01,
-    deadband=None,  # デフォルト（画面幅の4%）を使用
-    delta_angle_max=2.0  # 角度制限を厳しくする
+    deadband=40,   # デッドバンドを広げる
+    delta_angle_max=1.0  # 角度制限を厳しくする
 )
+
+# FPSも下げる
+tracker.scan_and_track(tracking_fps=5.0)
 ```
 
 **調整の優先順位**:
-1. まずdelta_angle_maxを下げる（3.0 → 2.0度）
-2. それでも不安定な場合、Kpを下げる
-3. 最後の手段としてdeadbandを広げる
+1. まずdelta_angle_maxを下げる（3.0 → 1.0度）
+2. FPSを下げてサーボの安定化時間を確保（10 Hz → 5 Hz）
+3. Kpを下げる（0.02 → 0.01）
+4. 最後の手段としてdeadbandを広げる（25px → 40px）
 
-### 10.3 追跡が遅い（応答が鈍い）
+**ハンチングの発生メカニズム**:
+1. サーボが移動中にカメラ画像がぶれる
+2. ぶれた画像で検出位置が変動
+3. 変動した位置に対してさらにサーボが追従
+4. この繰り返しで振動が増幅（正のフィードバック）
+
+**解決のポイント**:
+- FPSを下げてサーボが安定してから次のフレームを処理
+- delta_angle_maxを下げて1回の移動量を制限
+- Kpを下げて応答を穏やかにする
+
+### 11.3 追跡が遅い（応答が鈍い）
 
 **原因**:
 - Kpが小さすぎる
@@ -776,7 +939,7 @@ tracker = CameraTracker(
 )
 ```
 
-### 10.4 YOLOv8推論が遅い
+### 11.4 YOLOv8推論が遅い
 
 **原因**:
 - Raspberry Piの処理能力限界
@@ -788,12 +951,12 @@ tracker = CameraTracker(
 
 ---
 
-## 11. 将来の拡張案
+## 12. 将来の拡張案
 
-### 11.1 マルチターゲット追跡
+### 12.1 マルチターゲット追跡
 現在は最も信頼度の高い1体のみ追跡。複数ペットの同時追跡に対応。
 
-### 11.2 PID制御への拡張
+### 12.2 PID制御への拡張
 I（積分）成分を追加して定常偏差を削減。
 
 ```python
@@ -802,23 +965,23 @@ integral_x += error_x * dt
 delta_pan = -(Kp * error_x + Ki * integral_x)
 ```
 
-### 11.3 適応的ゲイン調整
+### 12.3 適応的ゲイン調整
 ペットの大きさや移動速度に応じてKpを自動調整。
 
-### 11.4 学習ベース追跡
+### 12.4 学習ベース追跡
 YOLOv8に加えて、追跡専用アルゴリズム（DeepSORT等）を導入。
 
 ---
 
-## 12. 参考資料
+## 13. 参考資料
 
-### 12.1 関連ドキュメント
+### 13.1 関連ドキュメント
 - `servo_control_specification.md` - サーボ制御仕様
 - `pet_monitoring_requirements.md` - 要件定義書
 - `raspberry_pi_5_pan_tilt_追跡制御_検討レポート（pca_9685_＋p制御）rev_4.md` - P制御設計レポート
 - `p_control_tracking_technical_report.md` - P制御追跡 技術検討レポート（デッドバンド・角度制限の設計根拠）
 
-### 12.2 外部リソース
+### 13.2 外部リソース
 - **YOLOv8公式**: https://docs.ultralytics.com/
 - **COCOデータセット**: https://cocodataset.org/
 - **SunFounder PiCar-X 顔追跡**: https://docs.sunfounder.com/projects/picar-x/ja/latest/python/python_stare_at_you.html
@@ -832,3 +995,4 @@ YOLOv8に加えて、追跡専用アルゴリズム（DeepSORT等）を導入。
 |-----------|------|---------|
 | 1.0 | 2025-12-14 | 初版作成 |
 | 1.1 | 2025-12-17 | Hailo-8Lライブラリ対応、角度制限（delta_angle_max）追加、デッドバンド動的計算対応、技術検討レポート追加 |
+| 1.2 | 2025-12-18 | 実機検証済みパラメータに更新（Kp=0.01, deadband=40px, delta_max=1.0°, fps=5Hz）、ハンチング対策追記 |
