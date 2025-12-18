@@ -25,7 +25,7 @@ PAN_RIGHT = 125              # パンサーボの右端
 
 TILT_CENTER = 90             # チルトサーボの中央
 TILT_DOWN = 45               # チルトサーボの下端
-TILT_UP = 135                # チルトサーボの上端
+TILT_UP = 120                # チルトサーボの上端（SG90の物理的限界を考慮）
 
 # 台形制御パラメータ
 STEP_ANGLE = 1               # 1ステップあたりの角度（度）
@@ -154,7 +154,7 @@ def set_tilt_angle(kit, angle, smooth=True):
 
     Args:
         kit (ServoKit): 初期化済みのServoKitオブジェクト
-        angle (float): 目標角度（TILT_DOWN～TILT_UP、45-135度）
+        angle (float): 目標角度（TILT_DOWN～TILT_UP、45-120度）
         smooth (bool): 台形制御を使用するか（デフォルトTrue）
 
     Raises:
@@ -189,7 +189,7 @@ def set_pan_tilt(kit, pan_angle, tilt_angle, smooth=True):
     Args:
         kit (ServoKit): 初期化済みのServoKitオブジェクト
         pan_angle (float): パンの目標角度（35-125度）
-        tilt_angle (float): チルトの目標角度（45-135度）
+        tilt_angle (float): チルトの目標角度（45-120度）
         smooth (bool): 台形制御を使用するか（デフォルトTrue）
 
     Raises:
