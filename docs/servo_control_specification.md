@@ -51,7 +51,7 @@ YOLOv8による物体検出結果に基づいてカメラの向きを自動調�
 | サーボ | 範囲 | 中央位置 | 備考 |
 |--------|------|----------|------|
 | パン（左右） | 35～125度 | 80度 | フレーム構造により物理的中央は80度 |
-| チルト（上下） | 45～135度 | 90度 | 標準的な中央位置 |
+| チルト（上下） | 45～120度 | 90度 | SG90の物理的限界を考慮 |
 
 **注意事項**:
 - パンサーボの中央位置は90度ではなく80度（フレーム構造による）
@@ -158,7 +158,7 @@ def set_tilt_angle(kit: ServoKit, angle: float, smooth: bool = True) -> None
 **機能**: チルトサーボを指定角度に移動
 **引数**:
 - `kit`: ServoKitオブジェクト
-- `angle`: 目標角度（45～135度）
+- `angle`: 目標角度（45～120度）
 - `smooth`: 台形制御使用フラグ（デフォルトTrue）
 
 **例外**: 範囲外の角度指定時にValueError
@@ -171,7 +171,7 @@ def set_pan_tilt(kit: ServoKit, pan_angle: float, tilt_angle: float, smooth: boo
 **引数**:
 - `kit`: ServoKitオブジェクト
 - `pan_angle`: パン目標角度（35～125度）
-- `tilt_angle`: チルト目標角度（45～135度）
+- `tilt_angle`: チルト目標角度（45～120度）
 - `smooth`: 台形制御使用フラグ（デフォルトTrue）
 
 **例外**: 範囲外の角度指定時にValueError
@@ -211,7 +211,7 @@ PAN_RIGHT = 125
 
 TILT_CENTER = 90
 TILT_DOWN = 45
-TILT_UP = 135
+TILT_UP = 120
 
 # 台形制御パラメータ
 STEP_ANGLE = 1
@@ -390,7 +390,7 @@ python3 servo_control.py
 ```python
 # 角度のクリッピング例
 pan_angle = max(35, min(125, calculated_pan_angle))
-tilt_angle = max(45, min(135, calculated_tilt_angle))
+tilt_angle = max(45, min(120, calculated_tilt_angle))
 ```
 
 ---
@@ -414,3 +414,4 @@ tilt_angle = max(45, min(135, calculated_tilt_angle))
 | バージョン | 日付 | 変更内容 |
 |-----------|------|---------|
 | 1.0 | 2025-12-14 | 初版作成 |
+| 1.1 | 2025-12-18 | チルト上限を135度→120度に変更（SG90の物理的限界を考慮） |

@@ -30,10 +30,10 @@ class CameraTracker:
         frame_height: int = 480,
         pan_channel: int = 0,
         tilt_channel: int = 1,
-        kp_pan: float = 0.02,
-        kp_tilt: float = 0.02,
-        deadband: Optional[int] = None,
-        delta_angle_max: float = 3.0,
+        kp_pan: float = 0.01,
+        kp_tilt: float = 0.01,
+        deadband: Optional[int] = 40,
+        delta_angle_max: float = 1.0,
         target_classes: Optional[List[str]] = None,
         flip_vertical: bool = False,
         log_file: Optional[str] = None,
@@ -596,16 +596,16 @@ def main():
                         help='カメラ映像を上下反転（カメラを逆さまに設置した場合）')
 
     # P制御パラメータ
-    parser.add_argument('--kp-pan', type=float, default=0.02,
+    parser.add_argument('--kp-pan', type=float, default=0.01,
                         help='パン制御の比例ゲイン')
 
-    parser.add_argument('--kp-tilt', type=float, default=0.02,
+    parser.add_argument('--kp-tilt', type=float, default=0.01,
                         help='チルト制御の比例ゲイン')
 
-    parser.add_argument('--deadband', type=int, default=None,
-                        help='不感帯（ピクセル）、未指定時は画面幅の4%%')
+    parser.add_argument('--deadband', type=int, default=40,
+                        help='不感帯（ピクセル）')
 
-    parser.add_argument('--delta-max', type=float, default=3.0,
+    parser.add_argument('--delta-max', type=float, default=1.0,
                         help='1回の更新での最大角度変化量（度）')
 
     # スキャン・追跡設定
@@ -618,7 +618,7 @@ def main():
     parser.add_argument('--duration', type=float, default=8.0,
                         help='追跡時間（秒）、--continuousと併用時は無視')
 
-    parser.add_argument('--fps', type=float, default=10.0,
+    parser.add_argument('--fps', type=float, default=5.0,
                         help='追跡ループの更新頻度（Hz）')
 
     parser.add_argument('--continuous', action='store_true',

@@ -270,14 +270,35 @@ else:
 **次のステップ**:
 - [x] サーボ物理動作の直接確認
 - [x] チャンネル切り替えテストで原因特定
-- [ ] チルトサーボを新品に交換して再テスト
+- [x] チルトサーボを新品に交換して再テスト
+
+**解決策**:
+チルトサーボ（SG90）を新品に交換
+
+**確認方法**:
+```bash
+source .venv/bin/activate && python3 -c "
+import servo_control
+import time
+kit = servo_control.initialize_servo_kit()
+servo_control.set_pan_tilt(kit, 80, 90)
+time.sleep(1)
+servo_control.set_pan_tilt(kit, 35, 135)
+time.sleep(1)
+servo_control.set_pan_tilt(kit, 125, 45)
+time.sleep(1)
+servo_control.set_center_position(kit)
+servo_control.release_servos(kit)
+print('Test complete')
+"
+```
 
 **関連ログファイル**:
 - `tracking.csv` - 初期テスト
 - `tracking4.csv` - パン修正後
 - `tracking5.csv` - flip条件分岐追加後
 
-**ステータス**: [ ] 未解決（調査継続）
+**ステータス**: [x] 解決済み（2025-12-18 サーボ交換で解決）
 
 ---
 
@@ -296,6 +317,136 @@ else:
 問題2（パン符号の修正）を適用することで解消
 
 **ステータス**: [x] 解決済み（パン符号修正により解消）
+
+---
+
+### 問題 6: チルトサーボがマウント組み込み後に動作しない
+
+**発生日**: 2025-12-18
+
+**発生状況**:
+- 問題4で故障したチルトサーボを新品に交換
+- サーボ単体テストでは正常動作を確認（90°→135°→45°→90°）
+- カメラをマウントに組み込んだ後、チルトサーボが動作しなくなった
+- パンサーボは正常に動作する
+
+**症状**:
+- チルトサーボに指令を送っても動かない
+- サーボ解放コマンド（`angle=None`、`duty_cycle=0`）を実行してもトルクが出続ける
+- 手でチルトを動かそうとしてもびくともしない
+- パン（CH0）は正常動作
+
+**試した解放方法**:
+```python
+# 方法1: servo_control.release_servos()
+servo_control.release_servos(kit)
+
+# 方法2: 直接Noneを設定
+kit.servo[1].angle = None
+
+# 方法3: duty_cycleを0に設定
+kit._pca.channels[1].duty_cycle = 0
+```
+→ いずれもトルクが出続け、解放されない
+
+**原因**:
+- SG90サーボの物理的な可動限界
+- TILT_UP=135度がサーボのギア限界を超えていた
+- 限界角度に達するとギアがロックし、解放信号も効かなくなる
+
+**解決策**:
+チルト上限を135度から120度に変更:
+```python
+# servo_control.py
+TILT_UP = 120  # チルトサーボの上端（SG90の物理的限界を考慮）
+```
+
+**確認方法**:
+```bash
+source .venv/bin/activate && python3 -c "
+import servo_control
+import time
+kit = servo_control.initialize_servo_kit()
+servo_control.set_tilt_angle(kit, 90)
+time.sleep(0.5)
+servo_control.set_tilt_angle(kit, 120)
+time.sleep(0.5)
+servo_control.set_tilt_angle(kit, 45)
+time.sleep(0.5)
+servo_control.set_tilt_angle(kit, 90)
+servo_control.release_servos(kit)
+print('Test complete')
+"
+```
+
+**変更したファイル**:
+- `servo_control.py`: TILT_UP を 135 → 120 に変更
+
+**ステータス**: [x] 解決済み（2025-12-18 チルト上限を120度に変更）
+
+---
+
+### 問題 7: P制御追跡時のハンチング（発振）
+
+**発生日**: 2025-12-18
+
+**発生状況**:
+- 追跡テスト中、対象を追従中に突然マウントが振動を始めた
+- 特に中央から大きく離れた位置への追従時に発生しやすい
+- 一度振動が始まると収束せず、振幅が増大する
+
+**症状**:
+- サーボがガクガクと左右（または上下）に振動
+- 振動がさらに振動を誘発し、収束しない
+- カメラ映像がぶれて検出位置も不安定に
+
+**原因**:
+- P制御のゲイン（Kp）が高すぎる
+- 1回あたりの角度変化量（delta_angle_max）が大きすぎる
+- 更新頻度（FPS）が高すぎ、サーボが安定する前に次の指令が来る
+- デッドバンドが小さすぎ、微小な検出誤差にも反応
+
+**ハンチングの発生メカニズム**:
+1. サーボが移動中にカメラ画像がぶれる
+2. ぶれた画像で検出位置が変動
+3. 変動した位置に対してさらにサーボが追従
+4. この繰り返しで振動が増幅（正のフィードバック）
+
+**解決策**:
+P制御パラメータを以下のように調整：
+
+| パラメータ | 調整前 | 調整後 |
+|-----------|--------|--------|
+| kp_pan | 0.02 | 0.01 |
+| kp_tilt | 0.02 | 0.01 |
+| deadband | 25px | 40px |
+| delta_angle_max | 3.0° | 1.0° |
+| fps | 10 Hz | 5 Hz |
+
+**コマンド例**:
+```bash
+# 調整後のパラメータで実行
+python3 camera_tracker.py --classes person --display --continuous --flip \
+    --kp-pan 0.01 --kp-tilt 0.01 --deadband 40 --delta-max 1.0 --fps 5
+```
+
+**確認方法**:
+```bash
+# デフォルトパラメータが更新されているため、以下のコマンドで動作確認
+source .venv/bin/activate && python3 camera_tracker.py --classes person --display --continuous --flip
+```
+
+**変更したファイル**:
+- `camera_tracker.py`: デフォルトパラメータを実機検証済みの値に変更
+- `docs/detection_and_tracking_specification.md`: 仕様書を更新
+
+**調整の優先順位（参考）**:
+1. delta_angle_maxを下げる（最も効果的）
+2. FPSを下げる（サーボの安定化時間を確保）
+3. Kpを下げる（応答を穏やかに）
+4. deadbandを広げる（微小振動の抑制）
+
+**ステータス**: [x] 解決済み（2025-12-18 パラメータ調整で安定動作を確認）
 
 ---
 
