@@ -25,6 +25,7 @@ wheels/
 
 # Virtual environments
 venv/
+.venv/
 ENV/
 env/
 
@@ -48,6 +49,9 @@ Thumbs.db
 *.jpg
 *.png
 *.jpeg
+
+# Tracking logs (動作確認用ログデータ)
+tracking*.csv
 
 # Model files
 *.pt
