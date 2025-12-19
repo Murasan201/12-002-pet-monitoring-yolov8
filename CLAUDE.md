@@ -25,6 +25,29 @@ This is a pet monitoring system using YOLOv8 for object detection.
 - Use present tense (e.g., "Add feature" not "Added feature")
 - Reference issue numbers when applicable
 
+### コミット前の必須チェック項目
+
+**CRITICAL**: コミット前に以下のファイルが含まれていないことを必ず確認すること。
+
+| 除外対象ファイル | 理由 |
+|------------------|------|
+| `tracking*.csv` | 動作確認用ログデータ（個人環境依存） |
+| `*.log` | ログファイル |
+| `*.jpg`, `*.png`, `*.jpeg` | カメラ画像（容量・プライバシー） |
+| `*.mp4`, `*.avi` | 動画ファイル |
+| `.env` | 環境変数（認証情報を含む可能性） |
+
+**確認コマンド**:
+```bash
+# ステージングされたファイルの確認
+git status
+
+# 除外対象ファイルが含まれていないか確認
+git diff --cached --name-only | grep -E '\.(csv|log|jpg|png|jpeg|mp4|avi)$'
+```
+
+上記コマンドで出力があった場合は、`git reset HEAD <file>` でステージングを解除すること。
+
 ## Testing
 - Write unit tests for new functionality
 - Ensure all tests pass before committing
