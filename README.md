@@ -168,13 +168,27 @@ python3 camera_tracker.py --width 1280 --height 720
 Start the full monitoring system with Slack notifications:
 
 ```bash
+# Basic execution (1-hour interval for Slack notifications)
 python3 main.py
+
+# Set notification interval to 30 minutes
+python3 main.py --interval 30
+
+# Disable Slack notifications (test mode)
+python3 main.py --no-slack
+
+# Display camera feed
+python3 main.py --display
+
+# Verbose logging
+python3 main.py --verbose
 ```
 
 The system will:
-1. Run an immediate monitoring cycle
-2. Schedule subsequent cycles every 10 minutes (configurable)
-3. Log all activities to `pet_monitoring.log` and console
+1. Continuously track pets in real-time using P-control
+2. Periodically capture images (default: 1 hour)
+3. Send captured images to Slack at specified intervals (default: 1 hour)
+4. Log all activities to console
 
 ### Run as a Service (Optional)
 
@@ -218,16 +232,18 @@ All configuration is done via the `.env` file. Key parameters:
 ### Slack Settings
 - `SLACK_BOT_TOKEN`: Bot OAuth token
 - `SLACK_CHANNEL`: Target channel for notifications
+- `SLACK_NOTIFICATION_INTERVAL`: Slack notification interval in minutes (default: 60)
 
 ### Camera Settings
 - `CAMERA_INDEX`: Camera device index (default: 0)
 - `FRAME_WIDTH`: Camera frame width (default: 640)
 - `FRAME_HEIGHT`: Camera frame height (default: 480)
+- `CAMERA_FLIP_VERTICAL`: Flip camera vertically (true/false, default: true)
 
 ### Control Parameters
-- `KP_PAN`: Proportional gain for pan control (default: 0.02)
-- `KP_TILT`: Proportional gain for tilt control (default: 0.02)
-- `DEADBAND`: Deadband in pixels to prevent jitter (default: 10)
+- `KP_PAN`: Proportional gain for pan control (default: 0.01)
+- `KP_TILT`: Proportional gain for tilt control (default: 0.01)
+- `DEADBAND`: Deadband in pixels to prevent jitter (default: 40)
 
 ### Scanning & Tracking
 - `SCAN_STEPS_PAN`: Number of pan positions during scan (default: 9)
@@ -236,25 +252,29 @@ All configuration is done via the `.env` file. Key parameters:
 
 ### Image Settings
 - `IMAGE_SAVE_DIR`: Directory for captured images (default: ./captured_images)
-- `CAPTURE_COUNT`: Number of images to capture (default: 3)
+- `IMAGE_CAPTURE_INTERVAL`: Image capture interval in minutes (default: 60)
 - `IMAGE_LONG_EDGE`: Target size for long edge in pixels (default: 800)
 - `JPEG_QUALITY`: JPEG compression quality 0-100 (default: 70)
-
-### Schedule
-- `SCHEDULE_INTERVAL`: Minutes between monitoring cycles (default: 10)
 
 ## Project Structure
 
 ```
 12-002-pet-monitoring-yolov8/
 ├── camera_tracker.py          # Camera tracking and image capture module
-├── slack_uploader.py          # Slack integration module
-├── main.py                    # Main orchestrator
+├── slack_notifier.py          # Slack notification module
+├── main.py                    # Main orchestrator (continuous tracking + periodic notification)
+├── servo_control.py           # Servo control library
+├── raspi_hailo8l_yolo.py     # Hailo-8L YOLO detector library
 ├── requirements.txt           # Python dependencies
 ├── .env.example              # Example environment configuration
-├── pet_monitoring_requirements.md  # Requirements document (Japanese)
-├── raspberry_pi_5_pan_tilt_追跡制御_検討レポート（pca_9685_＋p制御）rev_4.md  # Technical report (Japanese)
-└── README.md                 # This file
+├── docs/                      # Documentation directory
+│   ├── README.md              # Documentation index
+│   ├── pet_monitoring_requirements.md  # Requirements (Japanese)
+│   ├── servo_control_specification.md  # Servo control spec
+│   ├── detection_and_tracking_specification.md  # Detection/tracking spec
+│   ├── slack_notification_specification.md  # Slack notification spec
+│   └── ...                    # Other technical documents
+└── README.md                  # This file
 ```
 
 ## Module Overview
@@ -265,19 +285,21 @@ Handles all camera-related operations:
 - Full area scanning for pet detection
 - P-control based tracking
 - Image capture with automatic resizing and compression
+- Public API: `scan_and_track()`, `capture_images()`, `get_latest_image()`
 
-### slack_uploader.py
+### slack_notifier.py
 Manages Slack communication:
-- File upload using Slack Web API (`files_upload_v2`)
-- Message posting
-- Connection testing
+- Image upload using Slack Web API (`files_upload_v2`)
+- Text message posting
+- Configuration validation
+- Public API: `upload_images()`, `send_message()`, `validate_config()`
 
 ### main.py
 Main orchestrator that:
-- Loads configuration from `.env`
-- Schedules periodic monitoring cycles
-- Coordinates scanning, tracking, and notification
-- Handles error recovery and logging
+- Continuously tracks pets in real-time
+- Periodically captures images at specified intervals
+- Sends captured images to Slack on schedule
+- Handles error recovery and graceful shutdown (Ctrl+C)
 
 ## Control Algorithm
 

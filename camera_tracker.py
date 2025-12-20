@@ -1,479 +1,695 @@
+#!/usr/bin/env python3
 """
-Camera Tracker Module for Pet Monitoring System
+カメラトラッカーモジュール
 
-This module handles:
-- Pan/Tilt servo initialization
-- Full area scanning
-- P-control tracking
-- Still image capture (3 images with resizing and JPEG compression)
+Hailo-8L + YOLOv8によるペット検出とP制御によるカメラ追跡を提供する。
+検出したペットを画角中央に捉え続け、バウンディングボックス付き画像を保存する。
+
+Usage:
+    # ライブラリとして使用
+    from camera_tracker import scan_and_track, capture_images, get_latest_image
+
+    # CLIとして使用
+    python camera_tracker.py
+    python camera_tracker.py --display --continuous
+
+要件定義書: docs/pet_monitoring_requirements.md
+詳細仕様: docs/detection_and_tracking_specification.md
 """
 
-import time
 import os
-import csv
+import sys
+import time
+import logging
+from pathlib import Path
 from datetime import datetime
-from typing import Optional, Tuple, List
+from typing import Optional, Tuple, List, Dict, Any
+
 import cv2
 import numpy as np
-from picamera2 import Picamera2
-from raspi_hailo8l_yolo import YOLODetector, is_hailo_available
+from dotenv import load_dotenv
+
+# 既存モジュールをインポート
+from raspi_hailo8l_yolo import YOLODetector, CameraManager, draw_detections
 import servo_control
 
 
+# 環境変数を.envファイルから読み込む
+load_dotenv()
+
+# ロガーの設定
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+
+# ==================== グローバル変数（モジュールレベルのシングルトン） ====================
+# 最新の保存画像パスを記録（複数モジュール間で共有）
+_latest_image_path: Optional[str] = None
+_tracker_instance: Optional['CameraTracker'] = None
+
+
+# ==================== 公開API関数 ====================
+
+def scan_and_track(
+    scan_steps_pan: int = 9,
+    scan_steps_tilt: int = 5,
+    tracking_duration: float = 8.0,
+    tracking_fps: float = 5.0,
+    continuous: bool = False
+) -> dict:
+    """
+    可動域全体をスキャンし、ペット検出時に追跡へ移行する。
+
+    スキャンパターンで可動域を探索し、ペット（犬・猫）を発見すると
+    P制御による追跡モードに切り替わる。追跡中はペットを画角中央に
+    捉え続ける。
+
+    Args:
+        scan_steps_pan: パン軸のスキャンステップ数（デフォルト: 9）
+        scan_steps_tilt: チルト軸のスキャンステップ数（デフォルト: 5）
+        tracking_duration: 追跡時間（秒）（デフォルト: 8.0）
+        tracking_fps: 追跡ループの更新頻度（Hz）（デフォルト: 5.0）
+        continuous: 継続実行モード（デフォルト: False）
+
+    Returns:
+        dict: 実行結果
+            {
+                "detected": bool,      # ペットを検出したか
+                "tracked": bool,       # 追跡を実行したか
+                "error": str | None    # エラーメッセージ
+            }
+
+    Example:
+        >>> result = scan_and_track()
+        >>> if result["detected"]:
+        ...     print("ペットを検出して追跡しました")
+    """
+    global _tracker_instance
+
+    try:
+        # トラッカーインスタンスの初期化（シングルトン）
+        if _tracker_instance is None:
+            _tracker_instance = _create_tracker_from_env()
+
+        # スキャン→追跡実行
+        detected = _tracker_instance.scan_and_track(
+            scan_steps_pan=scan_steps_pan,
+            scan_steps_tilt=scan_steps_tilt,
+            tracking_duration=tracking_duration,
+            tracking_fps=tracking_fps,
+            continuous=continuous
+        )
+
+        return {
+            "detected": detected,
+            "tracked": detected,
+            "error": None
+        }
+
+    except Exception as e:
+        logger.error(f"スキャン・追跡に失敗しました: {e}")
+        return {
+            "detected": False,
+            "tracked": False,
+            "error": str(e)
+        }
+
+
+def capture_images(
+    count: int = 3,
+    long_edge: int = 800,
+    jpeg_quality: int = 70
+) -> list[str]:
+    """
+    画像を撮影・保存し、ファイルパス配列を返す。
+
+    バウンディングボックス付きの画像を指定枚数撮影し、
+    JPEG圧縮・リサイズして保存する。Slack通知用の画像生成を想定。
+
+    Args:
+        count: 撮影枚数（デフォルト: 3）
+        long_edge: 画像長辺サイズ（ピクセル）（デフォルト: 800）
+        jpeg_quality: JPEG品質（0-100）（デフォルト: 70）
+
+    Returns:
+        list[str]: 保存したファイルパスのリスト
+
+    Raises:
+        RuntimeError: カメラが開けない場合
+
+    Example:
+        >>> paths = capture_images(count=3, long_edge=800)
+        >>> print(f"{len(paths)}枚の画像を保存しました")
+    """
+    global _tracker_instance
+
+    try:
+        # トラッカーインスタンスの初期化（シングルトン）
+        if _tracker_instance is None:
+            _tracker_instance = _create_tracker_from_env()
+
+        # 環境変数から保存ディレクトリを取得
+        save_dir = os.getenv("IMAGE_SAVE_DIR", "./captured_images")
+
+        # 画像キャプチャ実行
+        file_paths = _tracker_instance.capture_images(
+            save_dir=save_dir,
+            count=count,
+            long_edge=long_edge,
+            jpeg_quality=jpeg_quality
+        )
+
+        return file_paths
+
+    except Exception as e:
+        logger.error(f"画像キャプチャに失敗しました: {e}")
+        return []
+
+
+def get_latest_image() -> str | None:
+    """
+    最新の保存済み画像パスを返す。
+
+    capture_images()で保存された最新の画像ファイルパスを返す。
+    一度も画像が保存されていない場合はNoneを返す。
+
+    Returns:
+        str | None: 最新画像のファイルパス、または None
+
+    Example:
+        >>> latest = get_latest_image()
+        >>> if latest:
+        ...     print(f"最新画像: {latest}")
+    """
+    return _latest_image_path
+
+
+def cleanup():
+    """
+    リソースのクリーンアップを実行する。
+
+    カメラ、サーボ、その他のリソースを解放する。
+    プログラム終了時に必ず呼び出すこと。
+    """
+    global _tracker_instance
+
+    if _tracker_instance is not None:
+        _tracker_instance.cleanup()
+        _tracker_instance = None
+
+
+# ==================== 内部ヘルパー関数 ====================
+
+def _create_tracker_from_env() -> 'CameraTracker':
+    """
+    環境変数からCameraTrackerインスタンスを生成する。
+
+    Returns:
+        CameraTracker: 初期化済みトラッカーインスタンス
+    """
+    # 環境変数からパラメータを取得
+    model_path = os.getenv("YOLO_MODEL_PATH", "models/yolov8s_h8l.hef")
+    camera_index = int(os.getenv("CAMERA_INDEX", "0"))
+    frame_width = int(os.getenv("FRAME_WIDTH", "640"))
+    frame_height = int(os.getenv("FRAME_HEIGHT", "480"))
+    flip_vertical = os.getenv("CAMERA_FLIP_VERTICAL", "true").lower() == "true"
+
+    # P制御パラメータ（実機検証済みデフォルト値）
+    kp_pan = float(os.getenv("KP_PAN", "0.01"))
+    kp_tilt = float(os.getenv("KP_TILT", "0.01"))
+    deadband = int(os.getenv("DEADBAND", "40"))
+
+    logger.info("CameraTrackerを初期化中...")
+    logger.info(f"  モデル: {model_path}")
+    logger.info(f"  カメラ: index={camera_index}, {frame_width}x{frame_height}")
+    logger.info(f"  上下反転: {flip_vertical}")
+    logger.info(f"  P制御: Kp_pan={kp_pan}, Kp_tilt={kp_tilt}, deadband={deadband}px")
+
+    return CameraTracker(
+        model_path=model_path,
+        camera_index=camera_index,
+        frame_width=frame_width,
+        frame_height=frame_height,
+        flip_vertical=flip_vertical,
+        kp_pan=kp_pan,
+        kp_tilt=kp_tilt,
+        deadband=deadband
+    )
+
+
+# ==================== CameraTrackerクラス ====================
+
 class CameraTracker:
-    """Pan-Tilt camera tracker with YOLOv8 pet detection."""
+    """
+    カメラ追跡クラス
+
+    YOLOv8による物体検出とP制御によるサーボ追跡を統合したクラス。
+    スキャン、追跡、画像キャプチャの全機能を提供する。
+
+    設計意図:
+        - Hailo-8Lライブラリ（raspi_hailo8l_yolo）を使用した高速検出
+        - サーボ制御ライブラリ（servo_control）による滑らかな動作
+        - P制御による中央追従（デッドバンド機構で微小振動防止）
+        - 画像保存機能によるSlack通知連携
+
+    Attributes:
+        detector: YOLODetectorインスタンス
+        camera: CameraManagerインスタンス
+        servo_kit: ServoKitインスタンス
+        current_pan_angle: 現在のパン角度
+        current_tilt_angle: 現在のチルト角度
+    """
 
     def __init__(
         self,
         model_path: str = "models/yolov8s_h8l.hef",
+        camera_index: int = 0,
         frame_width: int = 640,
         frame_height: int = 480,
-        pan_channel: int = 0,
-        tilt_channel: int = 1,
+        flip_vertical: bool = False,
+        target_classes: Optional[List[str]] = None,
         kp_pan: float = 0.01,
         kp_tilt: float = 0.01,
-        deadband: Optional[int] = 40,
-        delta_angle_max: float = 1.0,
-        target_classes: Optional[List[str]] = None,
-        flip_vertical: bool = False,
-        log_file: Optional[str] = None,
+        deadband: int = 40,
+        delta_angle_max: float = 1.0
     ):
         """
-        カメラトラッカーの初期化
+        CameraTrackerの初期化
 
         Args:
-            model_path: Hailo-8L用YOLOv8モデルファイルのパス（HEF形式）
-            frame_width: カメラ画像の幅
-            frame_height: カメラ画像の高さ
-            pan_channel: PCA9685のパン（水平）サーボチャンネル番号
-            tilt_channel: PCA9685のチルト（垂直）サーボチャンネル番号
-            kp_pan: パン制御の比例ゲイン（P制御パラメータ）
-            kp_tilt: チルト制御の比例ゲイン（P制御パラメータ）
-            deadband: 微小な揺れを防ぐための不感帯（ピクセル単位、Noneの場合は画面幅の4%を使用）
-            delta_angle_max: 1回の更新での最大角度変化量（度）
-            target_classes: 検出対象のクラス名リスト（例: ['person'], ['cat', 'dog']）
-                           Noneの場合はデフォルトで['cat', 'dog']を使用
-            flip_vertical: カメラ映像を上下反転するか（カメラを逆さまに設置した場合）
-            log_file: デバッグログのCSVファイルパス（Noneの場合はログ出力なし）
+            model_path: YOLOv8 Hailo-8Lモデルファイルのパス
+            camera_index: カメラデバイスのインデックス
+            frame_width: フレーム幅（ピクセル）
+            frame_height: フレーム高さ（ピクセル）
+            flip_vertical: カメラ上下反転フラグ
+            target_classes: 検出対象クラス名（Noneで犬・猫のみ）
+            kp_pan: パンのP制御ゲイン（実機検証済み: 0.01）
+            kp_tilt: チルトのP制御ゲイン（実機検証済み: 0.01）
+            deadband: デッドバンド幅（ピクセル）（実機検証済み: 40px）
+            delta_angle_max: 1回の更新での最大角度変化量（度）（実機検証済み: 1.0°）
         """
-        # 検出対象クラスの設定（デフォルトは犬・猫）
+        self.frame_width = frame_width
+        self.frame_height = frame_height
+        self.kp_pan = kp_pan
+        self.kp_tilt = kp_tilt
+        self.deadband = deadband
+        self.delta_angle_max = delta_angle_max
+
+        # 検出対象クラスのデフォルト設定（犬・猫）
         if target_classes is None:
             target_classes = ['cat', 'dog']
 
-        # Hailo-8L用YOLO検出器の初期化
-        self.detector = YOLODetector(model_path, target_classes=target_classes)
+        # YOLODetectorの初期化（Hailo-8L使用）
+        logger.info(f"YOLODetector初期化中（モデル: {model_path}）...")
+        self.detector = YOLODetector(
+            model_path=model_path,
+            target_classes=target_classes
+        )
+        logger.info(f"  検出対象: {target_classes}")
 
-        # カメラの設定（Picamera2を使用）
-        self.frame_width = frame_width
-        self.frame_height = frame_height
-        self.flip_vertical = flip_vertical  # 上下反転フラグ
-        self.picam2 = None  # Picamera2オブジェクト（後で初期化）
+        # CameraManagerの初期化
+        logger.info(f"カメラ初期化中（{frame_width}x{frame_height}）...")
+        self.camera = CameraManager(
+            resolution=(frame_width, frame_height),
+            device_id=camera_index,
+            flip_vertical=flip_vertical
+        )
 
         # サーボ制御の初期化
-        # servo_control.pyライブラリを使用してサーボを初期化
-        self.kit = servo_control.initialize_servo_kit()
+        logger.info("サーボ初期化中...")
+        self.servo_kit = servo_control.initialize_servo_kit()
 
-        # チャンネル番号を保存（servo_control.pyの定数と一致することを確認）
-        self.pan_channel = pan_channel
-        self.tilt_channel = tilt_channel
+        # サーボ角度の初期化（中央位置）
+        self.current_pan_angle = servo_control.PAN_CENTER
+        self.current_tilt_angle = servo_control.TILT_CENTER
+        servo_control.set_center_position(self.servo_kit)
 
-        # P制御のパラメータ設定
-        self.kp_pan = kp_pan  # パンの比例ゲイン（大きいほど反応が速い）
-        self.kp_tilt = kp_tilt  # チルトの比例ゲイン
-
-        # デッドバンドの設定（未指定の場合は画面幅の4%を使用）
-        if deadband is None:
-            self.deadband = int(0.04 * frame_width)
-        else:
-            self.deadband = deadband
-
-        # 角度変化量の上限（急峻な動きを防止してサーボ振動を抑える）
-        self.delta_angle_max = delta_angle_max
-
-        # サーボを中央位置に初期化
-        # servo_control.pyの仕様: パン80度、チルト90度
-        self.pan_angle = servo_control.PAN_CENTER
-        self.tilt_angle = servo_control.TILT_CENTER
-        servo_control.set_center_position(self.kit)
-        time.sleep(0.5)  # サーボが位置に到達するまで待機
-
-        # デバッグログの初期化
-        self.log_file = log_file
-        self._csv_writer = None
-        self._log_file_handle = None
-        if log_file:
-            self._init_log_file()
-
-    def _init_log_file(self):
-        """デバッグログファイルの初期化（CSVヘッダー書き込み）"""
-        self._log_file_handle = open(self.log_file, 'w', newline='', encoding='utf-8')
-        self._csv_writer = csv.writer(self._log_file_handle)
-        # CSVヘッダー
-        self._csv_writer.writerow([
-            'timestamp',
-            'bbox_cx', 'bbox_cy',       # バウンディングボックス中心座標
-            'frame_cx', 'frame_cy',     # 画面中心座標
-            'error_x', 'error_y',       # 誤差（ピクセル）
-            'deadband',                 # デッドバンド値
-            'in_deadband_x', 'in_deadband_y',  # デッドバンド内か
-            'raw_delta_pan', 'raw_delta_tilt', # 制限前の角度変化量
-            'delta_pan', 'delta_tilt',  # 制限後の角度変化量
-            'pan_angle', 'tilt_angle',  # サーボ指令角度
-        ])
-        self._log_file_handle.flush()
-        print(f"ログファイル作成: {self.log_file}")
-
-    def _log_tracking_data(self, cx: int, cy: int, error_x: float, error_y: float,
-                           raw_delta_pan: float, raw_delta_tilt: float,
-                           delta_pan: float, delta_tilt: float):
-        """追跡データをログに記録"""
-        if self._csv_writer is None:
-            return
-
-        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
-        frame_cx = self.frame_width / 2
-        frame_cy = self.frame_height / 2
-        in_deadband_x = abs(error_x) <= self.deadband
-        in_deadband_y = abs(error_y) <= self.deadband
-
-        self._csv_writer.writerow([
-            timestamp,
-            cx, cy,
-            frame_cx, frame_cy,
-            f'{error_x:.1f}', f'{error_y:.1f}',
-            self.deadband,
-            in_deadband_x, in_deadband_y,
-            f'{raw_delta_pan:.3f}', f'{raw_delta_tilt:.3f}',
-            f'{delta_pan:.3f}', f'{delta_tilt:.3f}',
-            f'{self.pan_angle:.1f}', f'{self.tilt_angle:.1f}',
-        ])
-        self._log_file_handle.flush()
-
-    def _close_log_file(self):
-        """ログファイルを閉じる"""
-        if self._log_file_handle:
-            self._log_file_handle.close()
-            self._log_file_handle = None
-            self._csv_writer = None
-
-    def _open_camera(self) -> bool:
-        """
-        Picamera2でカメラデバイスを開く
-
-        Returns:
-            True: カメラが正常に開けた場合
-            False: カメラを開けなかった場合
-        """
-        # 既にカメラが開いている場合はそのまま使用
-        if self.picam2 is not None:
-            return True
-
-        try:
-            # Picamera2オブジェクトを作成
-            self.picam2 = Picamera2()
-
-            # ビデオ設定（連続フレーム取得用、BGR形式で出力）
-            config = self.picam2.create_video_configuration(
-                main={"size": (self.frame_width, self.frame_height), "format": "BGR888"}
-            )
-            self.picam2.configure(config)
-            self.picam2.start()
-
-            # カメラの安定化を待機
-            time.sleep(0.5)
-            return True
-        except Exception as e:
-            print(f"Failed to open camera: {e}")
-            self.picam2 = None
-            return False
-
-    def _close_camera(self):
-        """Picamera2カメラを停止して閉じる"""
-        if self.picam2 is not None:
-            self.picam2.stop()
-            self.picam2.close()
-            self.picam2 = None
-
-    def _capture_frame(self) -> np.ndarray:
-        """
-        カメラからフレームを取得（上下反転オプション対応）
-
-        Returns:
-            np.ndarray: BGR形式のフレーム画像
-        """
-        frame = self.picam2.capture_array()
-        # 上下反転処理（カメラの取り付け向きに対応）
-        if self.flip_vertical:
-            frame = cv2.flip(frame, 0)  # 0: 上下反転
-        return frame
-
-    def _detect_pet(self, frame: np.ndarray) -> Optional[Tuple[int, int, int, int]]:
-        """
-        Hailo-8LのYOLOv8を使用してフレーム内のペット（犬または猫）を検出
-
-        Args:
-            frame: 入力画像（BGR形式のnumpy配列）
-
-        Returns:
-            検出された場合: バウンディングボックス (x1, y1, x2, y2)
-            検出されなかった場合: None
-        """
-        # Hailo-8L検出器で物体検出を実行（犬・猫のみフィルタリング済み）
-        detections = self.detector.detect(frame)
-
-        # 最も信頼度の高いペット検出を探す
-        best_box = None
-        best_conf = 0.0  # 最高信頼度
-
-        for det in detections:
-            conf = det['confidence']  # 信頼度
-
-            # 最高信頼度を更新する場合
-            if conf > best_conf:
-                best_conf = conf
-                # バウンディングボックスの座標を取得
-                bbox = det['bbox']  # [x1, y1, x2, y2]
-                best_box = (int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3]))
-
-        return best_box
-
-    def _get_box_center(self, box: Tuple[int, int, int, int]) -> Tuple[int, int]:
-        """
-        バウンディングボックスの中心座標を取得
-
-        Args:
-            box: バウンディングボックス (x1, y1, x2, y2)
-
-        Returns:
-            中心座標 (cx, cy)
-        """
-        x1, y1, x2, y2 = box
-        cx = (x1 + x2) // 2  # 中心のX座標
-        cy = (y1 + y2) // 2  # 中心のY座標
-        return cx, cy
-
-    def _update_servo_angles(self, cx: int, cy: int, error_x: float, error_y: float):
-        """
-        P制御（比例制御）を使用してサーボ角度を更新
-
-        P制御: 誤差に比例した制御量を出力するシンプルな制御方式
-        制御量 = Kp × 誤差
-
-        さらに角度変化量の上限を設けることで、急峻な動きを防止し
-        サーボ内部制御との干渉やオーバーシュートを抑える。
-
-        Args:
-            cx: バウンディングボックス中心X座標（ログ用）
-            cy: バウンディングボックス中心Y座標（ログ用）
-            error_x: 水平方向の誤差（ピクセル単位）
-            error_y: 垂直方向の誤差（ピクセル単位）
-        """
-        # P制御による角度変化量を計算
-        # パン: 対象が右(error_x>0)→パン角度を増やす(右を向く)
-        # パンは左右方向なのでflipの影響を受けない
-        raw_delta_pan = self.kp_pan * error_x
-
-        # チルト: カメラの取り付け向きで制御方向が変わる
-        # 通常マウント:
-        #   TILT_UP(135°) = カメラが上を向く
-        #   対象が上(error_y<0) → チルト増加 → 上を向く
-        # 逆さまマウント(flip):
-        #   TILT_UP(135°) = カメラが下を向く（カメラ本体が逆さまのため）
-        #   TILT_DOWN(45°) = カメラが上を向く
-        #   対象が上(error_y<0) → チルト減少 → 上を向く
-        if self.flip_vertical:
-            # 逆さまマウント: 符号を反転
-            raw_delta_tilt = self.kp_tilt * error_y
-        else:
-            # 通常マウント
-            raw_delta_tilt = -self.kp_tilt * error_y
-
-        # 実際に適用する角度変化量（デッドバンド・制限適用後）
-        delta_pan = 0.0
-        delta_tilt = 0.0
-
-        # 不感帯を適用して微小な揺れを防止
-        # 誤差が不感帯より大きい場合のみサーボを動かす
-        if abs(error_x) > self.deadband:
-            # 角度変化量の制限（急峻な動きを防止）
-            delta_pan = max(-self.delta_angle_max, min(self.delta_angle_max, raw_delta_pan))
-
-            # 角度を更新（servo_control.pyの動作範囲: 35〜125度）
-            new_pan_angle = self.pan_angle + delta_pan
-            new_pan_angle = max(servo_control.PAN_LEFT,
-                              min(servo_control.PAN_RIGHT, new_pan_angle))
-
-            # servo_control.pyを使用して角度を設定
-            try:
-                servo_control.set_pan_angle(self.kit, new_pan_angle)
-                self.pan_angle = new_pan_angle
-            except ValueError as e:
-                # 範囲外エラーの場合はログ出力（実際は範囲制限済みなので発生しない）
-                print(f"Pan angle error: {e}")
-
-        if abs(error_y) > self.deadband:
-            # 角度変化量の制限（急峻な動きを防止）
-            delta_tilt = max(-self.delta_angle_max, min(self.delta_angle_max, raw_delta_tilt))
-
-            # 角度を更新（servo_control.pyの動作範囲: 45〜135度）
-            new_tilt_angle = self.tilt_angle + delta_tilt
-            new_tilt_angle = max(servo_control.TILT_DOWN,
-                                min(servo_control.TILT_UP, new_tilt_angle))
-
-            # servo_control.pyを使用して角度を設定
-            try:
-                servo_control.set_tilt_angle(self.kit, new_tilt_angle)
-                self.tilt_angle = new_tilt_angle
-            except ValueError as e:
-                # 範囲外エラーの場合はログ出力（実際は範囲制限済みなので発生しない）
-                print(f"Tilt angle error: {e}")
-
-        # デバッグログに記録
-        self._log_tracking_data(cx, cy, error_x, error_y,
-                                raw_delta_pan, raw_delta_tilt,
-                                delta_pan, delta_tilt)
+        logger.info("CameraTracker初期化完了")
 
     def scan_and_track(
         self,
         scan_steps_pan: int = 9,
         scan_steps_tilt: int = 5,
         tracking_duration: float = 8.0,
-        tracking_fps: float = 10.0,
-        show_display: bool = False,
+        tracking_fps: float = 5.0,
+        continuous: bool = False,
+        display: bool = False,
+        log_csv: Optional[str] = None
     ) -> bool:
         """
-        可動域全体をスキャンしてペットを検出し、検出した場合は追跡する
+        全域スキャンを実施し、ペット検出時に追跡へ移行する。
 
-        処理フロー:
-        1. スキャンフェーズ: カメラを動かしながら全域を探索
-        2. 検出: ペットを発見したら次のフェーズへ
-        3. 追跡フェーズ: 一定時間ペットを画面中央に追従
+        可動域全体をステップ走査してペットを探し、発見したら
+        P制御による追跡モードに移行する。追跡中はペットを画角中央に
+        捉え続ける。
 
         Args:
             scan_steps_pan: パン軸のスキャンステップ数
             scan_steps_tilt: チルト軸のスキャンステップ数
-            tracking_duration: 追跡する時間（秒）
+            tracking_duration: 追跡時間（秒）
             tracking_fps: 追跡ループの更新頻度（Hz）
-            show_display: カメラ映像をウィンドウに表示するかどうか
+            continuous: 継続実行モード（True時は永続ループ）
+            display: 映像表示フラグ（True時はウィンドウ表示）
+            log_csv: デバッグログCSVファイルパス（Noneでログ無効）
 
         Returns:
-            True: ペットを検出して追跡した場合
-            False: ペットが見つからなかった場合
-            None: ユーザがqキーで終了した場合
+            bool: ペット検出・追跡成功時はTrue
         """
-        if not self._open_camera():
-            raise RuntimeError("Failed to open camera")
+        detected = False
 
         try:
-            # ========== スキャンフェーズ ==========
-            print("Starting scan...")
-            detected = False
-
-            # チルト（上下）を段階的に変更
-            # servo_control.pyの動作範囲: 45〜135度
-            for tilt_angle in np.linspace(servo_control.TILT_DOWN,
-                                         servo_control.TILT_UP,
-                                         scan_steps_tilt):
-                self.tilt_angle = tilt_angle
-                servo_control.set_tilt_angle(self.kit, tilt_angle, smooth=False)
-                time.sleep(0.3)  # サーボが安定するまで待機
-
-                # パン（左右）を段階的に変更
-                # servo_control.pyの動作範囲: 35〜125度
-                for pan_angle in np.linspace(servo_control.PAN_LEFT,
-                                            servo_control.PAN_RIGHT,
-                                            scan_steps_pan):
-                    self.pan_angle = pan_angle
-                    servo_control.set_pan_angle(self.kit, pan_angle, smooth=False)
-                    time.sleep(0.2)  # サーボが安定するまで待機
-
-                    # フレームを取得して検出を実行
-                    frame = self._capture_frame()
-
-                    box = self._detect_pet(frame)
-
-                    # 画面表示（オプション）
-                    if show_display:
-                        display_frame = frame.copy()
-                        if box is not None:
-                            # 検出枠を描画
-                            cv2.rectangle(display_frame, (box[0], box[1]), (box[2], box[3]), (0, 255, 0), 2)
-                        # スキャン位置を表示
-                        cv2.putText(display_frame, f"Scan: pan={pan_angle:.0f} tilt={tilt_angle:.0f}",
-                                    (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
-                        cv2.imshow("Camera Tracker", display_frame)
-                        if cv2.waitKey(1) & 0xFF == ord('q'):
-                            print("終了キーが押されました")
-                            return None  # ユーザ終了
+            if continuous:
+                logger.info("継続実行モード開始（Ctrl+C または qキーで終了）")
+                while True:
+                    # スキャン実施
+                    box = self._scan_area(scan_steps_pan, scan_steps_tilt, display)
 
                     if box is not None:
-                        print(f"Pet detected at pan={pan_angle:.1f}, tilt={tilt_angle:.1f}")
+                        logger.info("ペット検出！追跡モードへ移行します")
+                        # 追跡実施
+                        self._track_pet(
+                            duration=tracking_duration,
+                            fps=tracking_fps,
+                            display=display,
+                            log_csv=log_csv
+                        )
                         detected = True
-                        break
+                    else:
+                        logger.info("ペットが見つかりませんでした。再スキャンします...")
 
-                if detected:
-                    break
+                    time.sleep(1.0)
 
-            if not detected:
-                print("No pet detected during scan")
-                return False
+            else:
+                # 単発実行モード
+                logger.info("スキャン開始...")
+                box = self._scan_area(scan_steps_pan, scan_steps_tilt, display)
 
-            # ========== 追跡フェーズ ==========
-            print(f"Starting tracking for {tracking_duration} seconds...")
-            start_time = time.time()
-            frame_delay = 1.0 / tracking_fps  # フレーム間隔
+                if box is not None:
+                    logger.info("ペット検出！追跡モードへ移行します")
+                    # 追跡実施
+                    self._track_pet(
+                        duration=tracking_duration,
+                        fps=tracking_fps,
+                        display=display,
+                        log_csv=log_csv
+                    )
+                    detected = True
+                else:
+                    logger.info("ペットが見つかりませんでした")
 
-            while time.time() - start_time < tracking_duration:
+        except KeyboardInterrupt:
+            logger.info("ユーザーによる中断")
+
+        return detected
+
+    def _scan_area(
+        self,
+        steps_pan: int,
+        steps_tilt: int,
+        display: bool = False
+    ) -> Optional[Tuple[int, int, int, int]]:
+        """
+        可動域全体をスキャンしてペットを探索する。
+
+        チルト角を段階的に変更し、各チルト位置でパンを左右にスキャンする。
+        ペット検出時はその位置で停止し、バウンディングボックスを返す。
+
+        Args:
+            steps_pan: パン軸のステップ数
+            steps_tilt: チルト軸のステップ数
+            display: 映像表示フラグ
+
+        Returns:
+            Optional[Tuple]: 検出時はバウンディングボックス (x1, y1, x2, y2)、
+                            未検出時はNone
+        """
+        # スキャン範囲の計算
+        pan_range = servo_control.PAN_RIGHT - servo_control.PAN_LEFT
+        tilt_range = servo_control.TILT_UP - servo_control.TILT_DOWN
+
+        pan_step = pan_range / (steps_pan - 1) if steps_pan > 1 else 0
+        tilt_step = tilt_range / (steps_tilt - 1) if steps_tilt > 1 else 0
+
+        logger.info(f"スキャン範囲: パン {servo_control.PAN_LEFT}-{servo_control.PAN_RIGHT}度、チルト {servo_control.TILT_DOWN}-{servo_control.TILT_UP}度")
+        logger.info(f"ステップ数: パン {steps_pan}、チルト {steps_tilt}")
+
+        # チルト軸をスキャン
+        for i in range(steps_tilt):
+            tilt_angle = servo_control.TILT_DOWN + i * tilt_step
+            servo_control.set_tilt_angle(self.servo_kit, tilt_angle)
+            self.current_tilt_angle = tilt_angle
+            time.sleep(0.3)  # チルト移動後の安定待機
+
+            # パン軸をスキャン
+            for j in range(steps_pan):
+                pan_angle = servo_control.PAN_LEFT + j * pan_step
+                servo_control.set_pan_angle(self.servo_kit, pan_angle)
+                self.current_pan_angle = pan_angle
+                time.sleep(0.2)  # パン移動後の安定待機
+
+                # フレーム取得
+                frame = self.camera.read_frame()
+                if frame is None:
+                    continue
+
+                # ペット検出
+                box = self._detect_pet(frame)
+
+                # 映像表示（displayフラグがTrueの場合）
+                if display:
+                    self._display_frame(frame, box)
+
+                if box is not None:
+                    logger.info(f"ペット検出（パン: {pan_angle:.1f}度、チルト: {tilt_angle:.1f}度）")
+                    return box
+
+        return None
+
+    def _track_pet(
+        self,
+        duration: float,
+        fps: float,
+        display: bool = False,
+        log_csv: Optional[str] = None
+    ):
+        """
+        ペットをP制御で追跡する。
+
+        検出したペットの位置を基準に、P制御で画角中央に捉え続ける。
+        デッドバンド機構により微小振動を防止する。
+
+        Args:
+            duration: 追跡時間（秒）
+            fps: 追跡ループの更新頻度（Hz）
+            display: 映像表示フラグ
+            log_csv: デバッグログCSVファイルパス
+        """
+        logger.info(f"追跡開始（時間: {duration}秒、FPS: {fps} Hz）")
+
+        start_time = time.time()
+        frame_delay = 1.0 / fps
+
+        # CSVログの初期化
+        csv_file = None
+        if log_csv:
+            csv_file = open(log_csv, 'w', newline='', encoding='utf-8')
+            csv_file.write("timestamp,error_x,error_y,delta_pan,delta_tilt,pan_angle,tilt_angle\n")
+
+        try:
+            while time.time() - start_time < duration:
                 loop_start = time.time()
 
-                # フレームを取得
-                frame = self._capture_frame()
+                # フレーム取得
+                frame = self.camera.read_frame()
+                if frame is None:
+                    continue
 
-                # ペットを検出
+                # ペット検出
                 box = self._detect_pet(frame)
+
                 if box is not None:
-                    # バウンディングボックスの中心座標を取得
-                    cx, cy = self._get_box_center(box)
+                    # バウンディングボックスの中心座標を計算
+                    x1, y1, x2, y2 = box
+                    cx = (x1 + x2) // 2
+                    cy = (y1 + y2) // 2
+
                     # 画面中央との誤差を計算
-                    error_x = cx - self.frame_width / 2
-                    error_y = cy - self.frame_height / 2
-                    # サーボ角度を更新して追従（ログ記録も実行）
-                    self._update_servo_angles(cx, cy, error_x, error_y)
+                    center_x = self.frame_width / 2
+                    center_y = self.frame_height / 2
+                    error_x = cx - center_x
+                    error_y = cy - center_y
 
-                # 画面表示（オプション）
-                if show_display:
-                    display_frame = frame.copy()
-                    # 画面中央に十字線を描画
-                    center_x, center_y = self.frame_width // 2, self.frame_height // 2
-                    cv2.line(display_frame, (center_x - 20, center_y), (center_x + 20, center_y), (255, 255, 0), 1)
-                    cv2.line(display_frame, (center_x, center_y - 20), (center_x, center_y + 20), (255, 255, 0), 1)
+                    # P制御で角度変化量を計算（デッドバンド適用）
+                    delta_pan, delta_tilt = self._calculate_control(error_x, error_y)
 
-                    if box is not None:
-                        # 検出枠を描画
-                        cv2.rectangle(display_frame, (box[0], box[1]), (box[2], box[3]), (0, 255, 0), 2)
-                        # 検出中心点を描画
-                        cv2.circle(display_frame, (cx, cy), 5, (0, 0, 255), -1)
-                    # 追跡情報を表示
-                    remaining = tracking_duration - (time.time() - start_time)
-                    cv2.putText(display_frame, f"Tracking: {remaining:.1f}s pan={self.pan_angle:.0f} tilt={self.tilt_angle:.0f}",
-                                (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-                    cv2.imshow("Camera Tracker", display_frame)
-                    if cv2.waitKey(1) & 0xFF == ord('q'):
-                        print("終了キーが押されました")
-                        return None  # ユーザ終了
+                    # サーボ角度を更新
+                    self._update_servo_angles(delta_pan, delta_tilt)
 
-                # ループのタイミングを維持（指定FPSを保つ）
+                    # CSVログに記録
+                    if csv_file:
+                        csv_file.write(f"{time.time()},{error_x},{error_y},{delta_pan},{delta_tilt},{self.current_pan_angle},{self.current_tilt_angle}\n")
+
+                # 映像表示
+                if display:
+                    self._display_frame(frame, box)
+
+                # フレームレート維持
                 elapsed = time.time() - loop_start
                 if elapsed < frame_delay:
                     time.sleep(frame_delay - elapsed)
 
-            print("Tracking completed")
-            return True
-
         finally:
-            self._close_camera()
-            if show_display:
-                cv2.destroyAllWindows()
+            if csv_file:
+                csv_file.close()
+
+        logger.info("追跡終了")
+
+    def _detect_pet(self, frame: np.ndarray) -> Optional[Tuple[int, int, int, int]]:
+        """
+        フレームからペット（犬・猫）を検出する。
+
+        YOLOv8でフレームを解析し、信頼度が最も高いペットの
+        バウンディングボックスを返す。複数検出された場合は
+        最も信頼度の高い1体のみを追跡対象とする。
+
+        Args:
+            frame: 入力フレーム（BGR形式）
+
+        Returns:
+            Optional[Tuple]: 検出時はバウンディングボックス (x1, y1, x2, y2)、
+                            未検出時はNone
+        """
+        # Hailo-8L検出器で物体検出を実行（target_classesで犬・猫のみフィルタリング済み）
+        detections = self.detector.detect(frame)
+
+        if not detections:
+            return None
+
+        # 最も信頼度の高い検出を選択
+        best_box = None
+        best_conf = 0.0
+
+        for det in detections:
+            conf = det['confidence']
+            if conf > best_conf:
+                best_conf = conf
+                bbox = det['bbox']  # [x1, y1, x2, y2]
+                best_box = (int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3]))
+
+        return best_box
+
+    def _calculate_control(
+        self,
+        error_x: float,
+        error_y: float
+    ) -> Tuple[float, float]:
+        """
+        P制御で角度変化量を計算する。
+
+        画面中央とペット位置の誤差から、P制御式に基づいて
+        サーボの角度変化量を計算する。デッドバンド機構により
+        微小な誤差は無視される。
+
+        Args:
+            error_x: X方向の誤差（ピクセル）
+            error_y: Y方向の誤差（ピクセル）
+
+        Returns:
+            Tuple[float, float]: (delta_pan, delta_tilt) 角度変化量（度）
+        """
+        delta_pan = 0.0
+        delta_tilt = 0.0
+
+        # デッドバンド適用（X方向）
+        if abs(error_x) > self.deadband:
+            # P制御式: 制御量 = -Kp × 誤差
+            # マイナス符号はサーボ座標系の向きを調整するため
+            delta_pan = -self.kp_pan * error_x
+
+            # 角度変化量の制限（急峻な動作を防止）
+            delta_pan = max(-self.delta_angle_max, min(self.delta_angle_max, delta_pan))
+
+        # デッドバンド適用（Y方向）
+        if abs(error_y) > self.deadband:
+            # P制御式: 制御量 = Kp × 誤差
+            delta_tilt = self.kp_tilt * error_y
+
+            # 角度変化量の制限
+            delta_tilt = max(-self.delta_angle_max, min(self.delta_angle_max, delta_tilt))
+
+        return delta_pan, delta_tilt
+
+    def _update_servo_angles(self, delta_pan: float, delta_tilt: float):
+        """
+        サーボ角度を更新する。
+
+        計算された角度変化量を現在角度に加算し、
+        サーボの可動範囲内にクリップしてから指令を送る。
+
+        Args:
+            delta_pan: パンの角度変化量（度）
+            delta_tilt: チルトの角度変化量（度）
+        """
+        # 新しい角度を計算
+        new_pan_angle = self.current_pan_angle + delta_pan
+        new_tilt_angle = self.current_tilt_angle + delta_tilt
+
+        # 角度範囲にクリップ
+        new_pan_angle = max(servo_control.PAN_LEFT, min(servo_control.PAN_RIGHT, new_pan_angle))
+        new_tilt_angle = max(servo_control.TILT_DOWN, min(servo_control.TILT_UP, new_tilt_angle))
+
+        # サーボに指令（smoothパラメータをFalseにして直接移動）
+        # P制御で既に滑らかな軌道が生成されているため、
+        # サーボ側の台形制御は不要
+        servo_control.set_pan_angle(self.servo_kit, new_pan_angle, smooth=False)
+        servo_control.set_tilt_angle(self.servo_kit, new_tilt_angle, smooth=False)
+
+        # 現在角度を更新
+        self.current_pan_angle = new_pan_angle
+        self.current_tilt_angle = new_tilt_angle
+
+    def _display_frame(self, frame: np.ndarray, box: Optional[Tuple[int, int, int, int]]):
+        """
+        フレームをウィンドウに表示する。
+
+        バウンディングボックスと中心マーカーを描画してから表示する。
+        qキーで表示を終了できる。
+
+        Args:
+            frame: 表示するフレーム
+            box: バウンディングボックス（Noneの場合は枠なし）
+        """
+        display_frame = frame.copy()
+
+        # バウンディングボックスの描画
+        if box is not None:
+            x1, y1, x2, y2 = box
+            cv2.rectangle(display_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+
+            # 中心点の描画
+            cx = (x1 + x2) // 2
+            cy = (y1 + y2) // 2
+            cv2.circle(display_frame, (cx, cy), 5, (0, 255, 0), -1)
+
+        # 画面中央のマーカー描画
+        center_x = self.frame_width // 2
+        center_y = self.frame_height // 2
+        cv2.drawMarker(display_frame, (center_x, center_y), (0, 0, 255),
+                      cv2.MARKER_CROSS, 20, 2)
+
+        # デッドバンド領域の表示
+        cv2.rectangle(
+            display_frame,
+            (center_x - self.deadband, center_y - self.deadband),
+            (center_x + self.deadband, center_y + self.deadband),
+            (255, 0, 0), 1
+        )
+
+        cv2.imshow('Camera Tracker', display_frame)
+        cv2.waitKey(1)
 
     def capture_images(
         self,
@@ -481,171 +697,240 @@ class CameraTracker:
         count: int = 3,
         long_edge: int = 800,
         jpeg_quality: int = 70,
-        interval: float = 0.5,
+        interval: float = 0.5
     ) -> List[str]:
         """
-        静止画を撮影し、リサイズとJPEG圧縮を行う
+        静止画を撮影してリサイズ・圧縮保存する。
 
-        画像は長辺を指定サイズにリサイズし、JPEG圧縮でファイルサイズを削減
+        追跡完了後にペット画像を記録する。画像はSlack通知用に
+        リサイズ・JPEG圧縮され、バウンディングボックス付きで保存される。
 
         Args:
-            save_dir: 画像の保存先ディレクトリ
-            count: 撮影する画像の枚数
-            long_edge: 長辺の目標サイズ（ピクセル）
-            jpeg_quality: JPEG圧縮品質（0〜100、高いほど高品質）
+            save_dir: 保存先ディレクトリ
+            count: 撮影枚数
+            long_edge: リサイズ後の長辺サイズ（ピクセル）
+            jpeg_quality: JPEG圧縮品質（0-100）
             interval: 撮影間隔（秒）
 
         Returns:
-            保存したファイルパスのリスト
-        """
-        if not self._open_camera():
-            raise RuntimeError("Failed to open camera")
+            List[str]: 保存したファイルパスのリスト
 
-        # 保存先ディレクトリが存在しない場合は作成
-        os.makedirs(save_dir, exist_ok=True)
+        Raises:
+            RuntimeError: カメラが開けない場合
+        """
+        global _latest_image_path
+
+        # 保存ディレクトリの作成
+        save_path = Path(save_dir)
+        save_path.mkdir(parents=True, exist_ok=True)
+
+        logger.info(f"画像キャプチャ開始（{count}枚、長辺{long_edge}px、品質{jpeg_quality}）")
 
         file_paths = []
 
-        try:
-            for i in range(count):
-                # 2枚目以降は指定間隔を空ける
-                if i > 0:
-                    time.sleep(interval)
+        for i in range(count):
+            # フレーム取得
+            frame = self.camera.read_frame()
+            if frame is None:
+                logger.warning(f"フレーム取得失敗（{i+1}/{count}枚目）")
+                continue
 
-                # フレームを取得
-                frame = self._capture_frame()
+            # ペット検出（バウンディングボックス描画用）
+            detections = self.detector.detect(frame)
+            if detections:
+                # バウンディングボックスを描画
+                frame = draw_detections(frame, detections)
 
-                # ========== 画像のリサイズ ==========
-                height, width = frame.shape[:2]
-                # アスペクト比を維持しながら長辺を指定サイズに
-                if width > height:
-                    new_width = long_edge
-                    new_height = int(height * long_edge / width)
-                else:
-                    new_height = long_edge
-                    new_width = int(width * long_edge / height)
+            # 画像リサイズ（アスペクト比維持）
+            frame = self._resize_image(frame, long_edge)
 
-                resized = cv2.resize(frame, (new_width, new_height))
+            # ファイル名生成（タイムスタンプ付き）
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]  # ミリ秒まで
+            filename = f"pet_{timestamp}_{i+1}.jpg"
+            file_path = save_path / filename
 
-                # ========== ファイル名の生成 ==========
-                # タイムスタンプを含む一意のファイル名を生成
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
-                filename = f"pet_{timestamp}_{i+1}.jpg"
-                filepath = os.path.join(save_dir, filename)
+            # JPEG保存
+            cv2.imwrite(
+                str(file_path),
+                frame,
+                [cv2.IMWRITE_JPEG_QUALITY, jpeg_quality]
+            )
 
-                # ========== JPEG圧縮して保存 ==========
-                cv2.imwrite(filepath, resized, [cv2.IMWRITE_JPEG_QUALITY, jpeg_quality])
-                file_paths.append(filepath)
-                print(f"Saved: {filepath}")
+            file_paths.append(str(file_path))
+            logger.info(f"  保存: {file_path}")
 
-        finally:
-            self._close_camera()
+            # 最新画像パスを更新
+            _latest_image_path = str(file_path)
 
+            # 撮影間隔待機
+            if i < count - 1:
+                time.sleep(interval)
+
+        logger.info(f"画像キャプチャ完了（{len(file_paths)}枚）")
         return file_paths
 
+    def _resize_image(self, image: np.ndarray, long_edge: int) -> np.ndarray:
+        """
+        画像をアスペクト比を維持してリサイズする。
+
+        長辺を指定サイズに合わせてリサイズする。
+        ファイルサイズ削減とSlack通知の転送効率化を目的とする。
+
+        Args:
+            image: 入力画像
+            long_edge: リサイズ後の長辺サイズ（ピクセル）
+
+        Returns:
+            np.ndarray: リサイズ後の画像
+        """
+        height, width = image.shape[:2]
+
+        # アスペクト比を維持してリサイズサイズを計算
+        if width > height:
+            # 横長画像
+            new_width = long_edge
+            new_height = int(height * long_edge / width)
+        else:
+            # 縦長画像
+            new_height = long_edge
+            new_width = int(width * long_edge / height)
+
+        # リサイズ実行
+        resized = cv2.resize(image, (new_width, new_height))
+        return resized
+
     def reset_position(self):
-        """サーボを中央位置にリセット（パン80度、チルト90度）"""
-        self.pan_angle = servo_control.PAN_CENTER
-        self.tilt_angle = servo_control.TILT_CENTER
-        servo_control.set_center_position(self.kit)
+        """
+        サーボを中央位置にリセットする。
+
+        パン・チルトサーボを中央位置（PAN_CENTER, TILT_CENTER）に移動する。
+        スキャン開始前やシステム終了時に使用する。
+        """
+        logger.info("サーボを中央位置にリセット中...")
+        servo_control.set_center_position(self.servo_kit)
+        self.current_pan_angle = servo_control.PAN_CENTER
+        self.current_tilt_angle = servo_control.TILT_CENTER
+        logger.info("リセット完了")
 
     def cleanup(self):
-        """リソースのクリーンアップ（カメラを閉じてサーボをリセット、ログを閉じる）"""
-        self._close_camera()
-        self._close_log_file()
-        self.reset_position()
+        """
+        リソースのクリーンアップを実行する。
+
+        カメラ解放、サーボリセット、OpenCVウィンドウ破棄を行う。
+        プログラム終了時に必ず呼び出すこと。
+        """
+        logger.info("リソースをクリーンアップ中...")
+
+        # カメラ解放
+        if hasattr(self, 'camera'):
+            self.camera.release()
+
+        # サーボを中央位置に戻して解放
+        if hasattr(self, 'servo_kit'):
+            try:
+                servo_control.set_center_position(self.servo_kit)
+                servo_control.release_servos(self.servo_kit)
+            except Exception as e:
+                logger.warning(f"サーボ解放エラー: {e}")
+
+        # OpenCVウィンドウ破棄
+        cv2.destroyAllWindows()
+
+        logger.info("クリーンアップ完了")
 
 
-# ============================================================================
-# CLIアプリケーション
-# ============================================================================
+# ==================== CLIモード ====================
+
 def main():
     """
-    メイン関数：コマンドライン引数を処理してカメラトラッカーを実行
-    スキャン→検出→追跡の一連の処理を実行します。
+    CLIモードのメイン処理。
+
+    コマンドライン引数を解析してカメラトラッカーを実行する。
     """
     import argparse
-    from raspi_hailo8l_yolo import COCO_CLASSES
 
     parser = argparse.ArgumentParser(
-        description="Pan-Tilt Camera Tracker with YOLOv8 (Hailo-8L)",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter
+        description="カメラトラッカー - Hailo-8L + YOLOv8によるペット追跡システム",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+使用例:
+  # 基本的な実行（デフォルト設定：犬・猫を検出、8秒追跡）
+  python camera_tracker.py
+
+  # 映像を表示しながら継続実行
+  python camera_tracker.py --display --continuous
+
+  # P制御パラメータを調整
+  python camera_tracker.py --kp-pan 0.02 --kp-tilt 0.02 --deadband 20
+
+  # デバッグログを出力
+  python camera_tracker.py --log tracking.csv --display
+
+  # 追跡後に画像をキャプチャ
+  python camera_tracker.py --capture --capture-dir ./images --capture-count 5
+
+  # 使用可能なクラス一覧を表示
+  python camera_tracker.py --list-classes
+        """
     )
 
-    # モデル設定
-    parser.add_argument('--model', type=str,
-                        default='models/yolov8s_h8l.hef',
-                        help='HEFモデルファイルのパス')
-
-    # 検出対象クラス
-    parser.add_argument('--classes', type=str, nargs='+',
-                        default=None,
-                        help='検出対象のクラス名（スペース区切り、例: --classes person cat dog）')
-
+    # 基本パラメータ
+    parser.add_argument('--model', type=str, default='models/yolov8s_h8l.hef',
+                       help='HEFモデルファイルのパス')
+    parser.add_argument('--classes', type=str, nargs='+', default=['cat', 'dog'],
+                       help='検出対象のクラス名（スペース区切り）')
     parser.add_argument('--list-classes', action='store_true',
-                        help='使用可能なクラス名の一覧を表示して終了')
+                       help='使用可能なクラス名一覧を表示して終了')
 
-    # カメラ設定
+    # カメラパラメータ
     parser.add_argument('--width', type=int, default=640,
-                        help='カメラ画像の幅')
-
+                       help='カメラ画像の幅（ピクセル）')
     parser.add_argument('--height', type=int, default=480,
-                        help='カメラ画像の高さ')
-
+                       help='カメラ画像の高さ（ピクセル）')
     parser.add_argument('--flip', action='store_true',
-                        help='カメラ映像を上下反転（カメラを逆さまに設置した場合）')
+                       help='カメラ映像を上下反転（逆さま設置時）')
 
     # P制御パラメータ
     parser.add_argument('--kp-pan', type=float, default=0.01,
-                        help='パン制御の比例ゲイン')
-
+                       help='パン制御の比例ゲイン')
     parser.add_argument('--kp-tilt', type=float, default=0.01,
-                        help='チルト制御の比例ゲイン')
-
+                       help='チルト制御の比例ゲイン')
     parser.add_argument('--deadband', type=int, default=40,
-                        help='不感帯（ピクセル）')
-
+                       help='不感帯（ピクセル）')
     parser.add_argument('--delta-max', type=float, default=1.0,
-                        help='1回の更新での最大角度変化量（度）')
+                       help='1回の更新での最大角度変化量（度）')
 
-    # スキャン・追跡設定
+    # スキャン・追跡パラメータ
     parser.add_argument('--scan-pan', type=int, default=9,
-                        help='パン軸のスキャンステップ数')
-
+                       help='パン軸のスキャンステップ数')
     parser.add_argument('--scan-tilt', type=int, default=5,
-                        help='チルト軸のスキャンステップ数')
-
+                       help='チルト軸のスキャンステップ数')
     parser.add_argument('--duration', type=float, default=8.0,
-                        help='追跡時間（秒）、--continuousと併用時は無視')
-
+                       help='追跡時間（秒）')
     parser.add_argument('--fps', type=float, default=5.0,
-                        help='追跡ループの更新頻度（Hz）')
-
+                       help='追跡ループの更新頻度（Hz）')
     parser.add_argument('--continuous', action='store_true',
-                        help='ユーザが停止するまで継続実行（Ctrl+Cまたはqキーで終了）')
+                       help='継続実行モード（Ctrl+C または qキーで終了）')
 
-    # 表示設定
+    # 表示・ログパラメータ
     parser.add_argument('--display', action='store_true',
-                        help='カメラ映像をウィンドウに表示する（qキーで終了）')
-
-    # ログ設定
+                       help='カメラ映像をウィンドウに表示')
     parser.add_argument('--log', type=str, default=None,
-                        help='デバッグログのCSVファイルパス（例: --log tracking.csv）')
+                       help='デバッグログのCSVファイルパス')
 
-    # 画像キャプチャ設定
+    # 画像キャプチャパラメータ
     parser.add_argument('--capture', action='store_true',
-                        help='追跡後に画像をキャプチャする')
-
+                       help='追跡後に画像をキャプチャする')
     parser.add_argument('--capture-dir', type=str, default='captures',
-                        help='キャプチャ画像の保存先ディレクトリ')
-
+                       help='キャプチャ画像の保存先ディレクトリ')
     parser.add_argument('--capture-count', type=int, default=3,
-                        help='キャプチャする画像の枚数')
+                       help='キャプチャする画像の枚数')
 
     args = parser.parse_args()
 
     # クラス一覧表示モード
     if args.list_classes:
+        from raspi_hailo8l_yolo import COCO_CLASSES
         print("使用可能なクラス名（COCO 80クラス）:")
         print("-" * 50)
         for i, name in enumerate(COCO_CLASSES):
@@ -653,105 +938,64 @@ def main():
         print("-" * 50)
         print(f"合計: {len(COCO_CLASSES)} クラス")
         print("\n使用例: --classes person cat dog")
-        return
-
-    # 設定表示
-    print("=== Pan-Tilt Camera Tracker ===")
-    print(f"モデル: {args.model}")
-    print(f"解像度: {args.width}x{args.height}")
-    if args.classes:
-        print(f"検出対象: {', '.join(args.classes)}")
-    else:
-        print("検出対象: cat, dog（デフォルト）")
-    print(f"P制御ゲイン: pan={args.kp_pan}, tilt={args.kp_tilt}")
-    print(f"最大角度変化: {args.delta_max}度/更新")
-    if args.continuous:
-        print("実行モード: 継続実行（Ctrl+C または qキーで終了）")
-    else:
-        print(f"追跡時間: {args.duration}秒")
-    if args.flip:
-        print("カメラ映像: 上下反転")
-    if args.display:
-        print("表示: ON")
-    if args.log:
-        print(f"ログ出力: {args.log}")
-    print()
+        return 0
 
     tracker = None
 
     try:
-        # CameraTrackerの初期化
+        # トラッカー初期化
+        logger.info("=== カメラトラッカー ===")
+        logger.info(f"モデル: {args.model}")
+        logger.info(f"検出対象: {args.classes}")
+        logger.info(f"解像度: {args.width}x{args.height}")
+        logger.info(f"P制御: Kp_pan={args.kp_pan}, Kp_tilt={args.kp_tilt}, deadband={args.deadband}px")
+
         tracker = CameraTracker(
             model_path=args.model,
             frame_width=args.width,
             frame_height=args.height,
+            flip_vertical=args.flip,
+            target_classes=args.classes,
             kp_pan=args.kp_pan,
             kp_tilt=args.kp_tilt,
             deadband=args.deadband,
-            delta_angle_max=args.delta_max,
-            target_classes=args.classes,
-            flip_vertical=args.flip,
-            log_file=args.log,
+            delta_angle_max=args.delta_max
         )
 
-        # 継続実行モードの場合は無限ループ
-        if args.continuous:
-            print("継続実行モード開始...")
-            while True:
-                result = tracker.scan_and_track(
-                    scan_steps_pan=args.scan_pan,
-                    scan_steps_tilt=args.scan_tilt,
-                    tracking_duration=float('inf'),  # 無限追跡
-                    tracking_fps=args.fps,
-                    show_display=args.display,
-                )
-                # ユーザがqキーで終了した場合
-                if result is None:
-                    print("ユーザにより終了されました")
-                    break
-                # 対象が見つからなかった場合は再スキャン
-                if not result:
-                    print("対象が見つかりません。再スキャン...")
-                    time.sleep(1.0)
-        else:
-            # 通常モード：指定時間だけ追跡
-            found = tracker.scan_and_track(
-                scan_steps_pan=args.scan_pan,
-                scan_steps_tilt=args.scan_tilt,
-                tracking_duration=args.duration,
-                tracking_fps=args.fps,
-                show_display=args.display,
+        # スキャン→追跡実行
+        detected = tracker.scan_and_track(
+            scan_steps_pan=args.scan_pan,
+            scan_steps_tilt=args.scan_tilt,
+            tracking_duration=args.duration,
+            tracking_fps=args.fps,
+            continuous=args.continuous,
+            display=args.display,
+            log_csv=args.log
+        )
+
+        # 画像キャプチャ（オプション）
+        if detected and args.capture:
+            logger.info("画像キャプチャを実行します...")
+            file_paths = tracker.capture_images(
+                save_dir=args.capture_dir,
+                count=args.capture_count
             )
+            logger.info(f"{len(file_paths)}枚の画像を保存しました")
 
-            if found:
-                print("対象を検出・追跡しました")
-
-                # 画像キャプチャ（オプション）
-                if args.capture:
-                    print(f"画像をキャプチャ中...")
-                    paths = tracker.capture_images(
-                        save_dir=args.capture_dir,
-                        count=args.capture_count,
-                    )
-                    print(f"保存完了: {len(paths)}枚")
-                    for p in paths:
-                        print(f"  - {p}")
-            else:
-                print("対象が見つかりませんでした")
+        return 0
 
     except KeyboardInterrupt:
-        print("\n中断されました")
+        logger.info("ユーザーによる中断")
+        return 0
 
     except Exception as e:
-        print(f"エラー: {e}")
-        import traceback
-        traceback.print_exc()
+        logger.error(f"エラーが発生しました: {e}", exc_info=True)
+        return 1
 
     finally:
         if tracker:
             tracker.cleanup()
-            print("クリーンアップ完了")
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

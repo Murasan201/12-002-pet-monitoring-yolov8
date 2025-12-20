@@ -91,6 +91,23 @@
 
 ---
 
+### 6. メインオーケストレーター仕様書
+**ファイル**: `main.py`（ソースコード内docstring）
+
+**概要**: 常時追跡と定期Slack通知を統合したメインプログラム
+
+**主な内容**:
+- システムアーキテクチャ（常時追跡＋定期通知）
+- タイマー制御（画像保存・Slack送信）
+- camera_tracker、slack_notifierとの連携
+- エラーハンドリングとシグナル処理
+- CLIオプション（--interval, --no-slack, --display, --verbose）
+- 環境変数による設定管理
+
+**対象読者**: システム統合を理解したい開発者、メイン処理の保守を行う開発者
+
+---
+
 ### 7. P制御追跡 技術検討レポート
 **ファイル**: [`p_control_tracking_technical_report.md`](./p_control_tracking_technical_report.md)
 
@@ -259,6 +276,7 @@ Hailo-8L AIアクセラレータを使用したYOLO物体検出ライブラリ
 
 | 日付 | 変更内容 |
 |------|---------|
+| 2025-12-20 | main.py（メインオーケストレーター）を要件定義書に基づいて再実装 |
 | 2025-12-20 | Slack通知機能仕様書（slack_notification_specification.md）を追加 |
 | 2025-12-17 | セットアップ手順書（SETUP_GUIDE.md）、参考文献（REFERENCES.md）を追加 |
 | 2025-12-17 | トラブルシューティングドキュメント（TROUBLESHOOTING.md）を追加 |
