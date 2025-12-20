@@ -57,3 +57,8 @@ tracking*.csv
 *.pt
 *.pth
 *.onnx
+
+# Environment variables (認証情報保護)
+.env
+.env.local
+.env.*.local
