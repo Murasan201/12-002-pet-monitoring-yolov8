@@ -424,7 +424,7 @@ except SlackApiError as e:
 
 | 情報 | 形式 | 例 | 保存先 |
 |------|------|-----|--------|
-| Bot User OAuth Token | `xoxb-{数字}-{数字}-{英数字}` | `your-slack-bot-token-here` | `.env` |
+| Bot User OAuth Token | 「xoxb-」で始まる文字列 | （Slack Appで取得） | `.env` |
 | チャンネルID | `C` + 英数字（11文字程度） | `C01AB2CD3EF` | `.env` |
 
 ### 6.4 準備作業のフロー
