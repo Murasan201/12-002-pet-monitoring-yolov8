@@ -2,7 +2,6 @@
 """
 Raspberry Pi 5 + Hailo-8L YOLO物体検出アプリケーション/ライブラリ
 Hailo-8L AIアクセラレータを使用したリアルタイムYOLO物体検出システム
-要件定義書: docs/11_002_raspi_hailo_8_l_yolo_detector.md
 
 このモジュールは以下の2つの使用方法をサポートします：
 
