@@ -73,7 +73,42 @@
 
 ---
 
-### 5. P制御追跡 技術検討レポート
+### 5. Slack通知機能仕様書
+**ファイル**: [`slack_notification_specification.md`](./slack_notification_specification.md)
+
+**概要**: ペット検出時のSlack通知機能モジュールの仕様
+
+**主な内容**:
+- モジュール設計（関数ライブラリとして利用可能）
+- API仕様（`upload_images()`, `send_message()`, `send_notification()`）
+- Slack App設定とOAuthスコープ
+- 環境変数による設定管理
+- エラーハンドリングとリトライ処理
+- CLIとしての実行方法
+- セキュリティ考慮事項
+
+**対象読者**: Slack通知機能の実装・保守を行う開発者
+
+---
+
+### 6. メインオーケストレーター仕様書
+**ファイル**: `main.py`（ソースコード内docstring）
+
+**概要**: 常時追跡と定期Slack通知を統合したメインプログラム
+
+**主な内容**:
+- システムアーキテクチャ（常時追跡＋定期通知）
+- タイマー制御（画像保存・Slack送信）
+- camera_tracker、slack_notifierとの連携
+- エラーハンドリングとシグナル処理
+- CLIオプション（--interval, --no-slack, --display, --verbose）
+- 環境変数による設定管理
+
+**対象読者**: システム統合を理解したい開発者、メイン処理の保守を行う開発者
+
+---
+
+### 7. P制御追跡 技術検討レポート
 **ファイル**: [`p_control_tracking_technical_report.md`](./p_control_tracking_technical_report.md)
 
 **概要**: 非リアルタイムOS環境でのP制御追跡における安定化手法の技術検討
@@ -90,7 +125,7 @@
 
 ---
 
-### 6. トラブルシューティング
+### 8. トラブルシューティング
 **ファイル**: [`TROUBLESHOOTING.md`](./TROUBLESHOOTING.md)
 
 **概要**: 環境構築・テスト・運用中に発生したエラーと解決策のナレッジベース
@@ -106,7 +141,7 @@
 
 ---
 
-### 7. セットアップ手順書
+### 9. セットアップ手順書
 **ファイル**: [`SETUP_GUIDE.md`](./SETUP_GUIDE.md)
 
 **概要**: 書籍掲載用のセットアップ手順を詳細に記録
@@ -121,7 +156,7 @@
 
 ---
 
-### 8. 参考文献
+### 10. 参考文献
 **ファイル**: [`REFERENCES.md`](./REFERENCES.md)
 
 **概要**: 書籍掲載用の参考文献リスト
@@ -145,6 +180,7 @@ docs/
 ├── raspberry_pi_5_pan_tilt_追跡制御_検討レポート（pca_9685_＋p制御）rev_4.md # P制御設計レポート
 ├── servo_control_specification.md                                          # サーボ制御仕様
 ├── detection_and_tracking_specification.md                                 # 検出・追跡仕様
+├── slack_notification_specification.md                                     # Slack通知機能仕様
 ├── p_control_tracking_technical_report.md                                  # P制御追跡 技術検討レポート
 ├── TROUBLESHOOTING.md                                                      # トラブルシューティング
 ├── SETUP_GUIDE.md                                                          # セットアップ手順書
@@ -240,6 +276,8 @@ Hailo-8L AIアクセラレータを使用したYOLO物体検出ライブラリ
 
 | 日付 | 変更内容 |
 |------|---------|
+| 2025-12-20 | main.py（メインオーケストレーター）を要件定義書に基づいて再実装 |
+| 2025-12-20 | Slack通知機能仕様書（slack_notification_specification.md）を追加 |
 | 2025-12-17 | セットアップ手順書（SETUP_GUIDE.md）、参考文献（REFERENCES.md）を追加 |
 | 2025-12-17 | トラブルシューティングドキュメント（TROUBLESHOOTING.md）を追加 |
 | 2025-12-17 | P制御追跡 技術検討レポート（p_control_tracking_technical_report.md）を追加 |
