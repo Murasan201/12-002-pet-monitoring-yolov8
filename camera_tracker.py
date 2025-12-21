@@ -5,6 +5,12 @@
 Hailo-8L + YOLOv8によるペット検出とP制御によるカメラ追跡を提供する。
 検出したペットを画角中央に捉え続け、バウンディングボックス付き画像を保存する。
 
+主な機能:
+    - 可動域全体のスキャンによるペット探索
+    - P制御による滑らかな追跡動作
+    - バウンディングボックス付き画像の保存
+    - Slack通知連携用の画像キャプチャ
+
 Usage:
     # ライブラリとして使用
     from camera_tracker import scan_and_track, capture_images, get_latest_image
@@ -12,9 +18,6 @@ Usage:
     # CLIとして使用
     python camera_tracker.py
     python camera_tracker.py --display --continuous
-
-要件定義書: docs/pet_monitoring_requirements.md
-詳細仕様: docs/detection_and_tracking_specification.md
 """
 
 import os

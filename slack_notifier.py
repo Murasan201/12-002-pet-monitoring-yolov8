@@ -334,9 +334,10 @@ def _cli_validate() -> int:
             print(f"  - {error}")
         print()
         print("解決方法:")
-        print("  1. .envファイルを作成してください")
+        print("  1. .envファイルをプロジェクトルートに作成してください")
         print("  2. SLACK_BOT_TOKEN と SLACK_CHANNEL を設定してください")
-        print("  3. 詳細は docs/slack_notification_specification.md を参照してください")
+        print("     SLACK_BOT_TOKEN=xoxb-your-token-here")
+        print("     SLACK_CHANNEL=C01234ABCDE")
         return 1
 
 
@@ -430,7 +431,9 @@ def main() -> int:
   SLACK_BOT_TOKEN    Bot User OAuth Token (xoxb-で始まる)
   SLACK_CHANNEL      送信先チャンネルID (Cで始まる)
 
-詳細は docs/slack_notification_specification.md を参照してください。
+.envファイルの設定例:
+  SLACK_BOT_TOKEN=xoxb-your-token-here
+  SLACK_CHANNEL=C01234ABCDE
         """
     )
 
