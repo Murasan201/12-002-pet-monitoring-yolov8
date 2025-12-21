@@ -85,6 +85,10 @@
     2. `camera_tracker` が定期的に画像を保存（バウンディングボックス付き）
     3. タイマートリガー（1時間ごと）で `slack_notifier` を呼び出し、保存済み画像を送信
   - 設定: `.env`（例: `SLACK_BOT_TOKEN`, `SLACK_CHANNEL`, 保存ディレクトリ、送信間隔等）
+  - **重要（協調スケジューリング）**:
+    - 追跡が「検出が続く限り継続」する実装の場合、`scan_and_track()` が長時間戻らないことがある
+    - この場合でも定期Slack通知/画像保存を止めないため、`camera_tracker.scan_and_track(tick_callback=...)` で
+      `main.py` の `run_periodic_tasks()` を追跡/スキャン内部ループから定期的に呼び出す（協調的に定期処理を回す）
 
 ---
 

@@ -279,14 +279,20 @@ class PetMonitoringOrchestrator:
         if now >= self.next_notification_time:
             logger.info("=== 定期Slack通知 ===")
 
-            # 最新画像を取得（camera_trackerが保存した画像）
-            latest_image = camera_tracker.get_latest_image()
+            # 通知時に必ず新しい画像をキャプチャする
+            # ペット検出の有無に関わらず、その時点の部屋の状況を送信
+            logger.info("通知用画像をキャプチャ中...")
+            file_paths = camera_tracker.capture_images(
+                count=1,
+                long_edge=800,
+                jpeg_quality=70
+            )
 
-            if latest_image and os.path.exists(latest_image):
-                # 最新画像をSlackに送信
-                self.send_to_slack([latest_image])
+            if file_paths and os.path.exists(file_paths[0]):
+                # キャプチャした画像をSlackに送信
+                self.send_to_slack(file_paths)
             else:
-                logger.warning("送信する画像が見つかりません")
+                logger.warning("画像のキャプチャに失敗しました")
 
             # 次回実行時刻を更新
             self.next_notification_time = now + timedelta(seconds=self.slack_notification_interval)
@@ -328,13 +334,22 @@ class PetMonitoringOrchestrator:
                 # 常時追跡の実行
                 # continuousモードで実行すると永続ループになるため、
                 # 単発実行を繰り返して定期タスクの機会を確保する
+                tracking_duration = float(os.getenv("TRACKING_DURATION", "8.0"))
+                tracking_fps = float(os.getenv("TRACKING_FPS", "5.0"))
                 result = camera_tracker.scan_and_track(
                     scan_steps_pan=9,
                     scan_steps_tilt=5,
-                    tracking_duration=8.0,
-                    tracking_fps=5.0,
-                    continuous=False  # 単発実行
+                    tracking_duration=tracking_duration,
+                    tracking_fps=tracking_fps,
+                    continuous=False,  # 単発実行
+                    display=self.display,
+                    tick_callback=self.run_periodic_tasks
                 )
+
+                # qキー終了（display時）
+                if result.get("error") == "user_quit":
+                    logger.info("qキーにより終了します")
+                    break
 
                 # 検出失敗時は短時間待機してから再スキャン
                 if not result["detected"]:
@@ -391,6 +406,9 @@ def main():
   # 詳細ログ出力
   python main.py --verbose
 
+  # 人間も検出対象に追加
+  python main.py --classes cat dog person
+
 環境変数:
   SLACK_BOT_TOKEN              Slack Bot User OAuth Token (xoxb-で始まる)
   SLACK_CHANNEL                送信先チャンネルID (Cで始まる)
@@ -432,7 +450,22 @@ def main():
         help='詳細ログを出力'
     )
 
+    # 検出対象クラス
+    parser.add_argument(
+        '--classes',
+        type=str,
+        nargs='+',
+        default=None,
+        metavar='CLASS',
+        help='検出対象のクラス名（スペース区切り）デフォルト: cat dog'
+    )
+
     args = parser.parse_args()
+
+    # --display は X サーバ（DISPLAY）が必要。SSH等のheadless環境では自動で無効化する
+    if args.display and not os.environ.get("DISPLAY"):
+        logger.warning("--display が指定されましたが、DISPLAY が未設定のため無効化します（headless環境）")
+        args.display = False
 
     # Slack通知間隔の決定（優先順位: CLI引数 > 環境変数 > デフォルト）
     if args.interval is not None:
@@ -442,6 +475,10 @@ def main():
 
     # 画像キャプチャ間隔の取得
     capture_interval_minutes = int(os.getenv("IMAGE_CAPTURE_INTERVAL", "60"))
+
+    # 検出対象クラスの設定（--classesが指定された場合）
+    if args.classes:
+        camera_tracker.set_target_classes(args.classes)
 
     # オーケストレーター起動
     orchestrator = PetMonitoringOrchestrator(
