@@ -20,8 +20,6 @@ Usage:
 
     # 詳細ログ出力
     python main.py --verbose
-
-要件定義書: docs/pet_monitoring_requirements.md
 """
 
 import os
@@ -86,7 +84,7 @@ class PetMonitoringOrchestrator:
     camera_trackerで常時ペットを追跡しながら、タイマー制御で
     定期的に画像を保存してSlackに送信する。
 
-    システムアーキテクチャ（要件定義書 セクション3.1参照）:
+    システムアーキテクチャ:
         1. 常時追跡ループ: camera_tracker.scan_and_track() を継続実行
         2. 定期画像保存: 指定間隔で camera_tracker.capture_images() を実行
         3. タイマートリガー: 保存済み画像を slack_notifier で送信
@@ -415,8 +413,6 @@ def main():
   SLACK_NOTIFICATION_INTERVAL  Slack通知間隔（分）デフォルト: 60
   IMAGE_CAPTURE_INTERVAL       画像保存間隔（分）デフォルト: 60
   IMAGE_SAVE_DIR               画像保存ディレクトリ デフォルト: ./captured_images
-
-詳細は docs/pet_monitoring_requirements.md を参照してください。
         """
     )
 
