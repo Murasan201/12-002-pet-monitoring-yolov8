@@ -1,25 +1,34 @@
 #!/usr/bin/env python3
 """
-ペット見守りシステム - メインオーケストレーター
+ペット見守りシステム - メインオーケストレーター【デバッグ版】
+
+================================================================================
+⚠️  警告: このファイルはデバッグ用のアーカイブです
+================================================================================
+- 本ファイルは動作確認・デバッグ用として機能をFixした状態で保存しています
+- 今後一切の変更を加えないでください
+- 本番用・書籍掲載用のコードは main.py を使用してください
+- 作成日: 2025-12-21
+================================================================================
 
 常時ペット追跡と定期Slack通知を統合したメインプログラム。
 camera_trackerで常時追跡を行いながら、タイマー制御でSlack通知を実行する。
 
 Usage:
     # 基本実行（1時間ごとにSlack通知）
-    python main.py
+    python main_debug.py
 
     # Slack通知間隔を指定（分単位）
-    python main.py --interval 30
+    python main_debug.py --interval 30
 
     # Slack通知を無効化（テスト用）
-    python main.py --no-slack
+    python main_debug.py --no-slack
 
     # 映像表示を有効化
-    python main.py --display
+    python main_debug.py --display
 
     # 詳細ログ出力
-    python main.py --verbose
+    python main_debug.py --verbose
 
 要件定義書: docs/pet_monitoring_requirements.md
 """
