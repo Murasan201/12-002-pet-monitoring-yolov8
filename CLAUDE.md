@@ -20,6 +20,47 @@ This is a pet monitoring system using YOLOv8 for object detection.
 - **Comments**: Write all code comments in Japanese
 - **Comment Style**: Add beginner-friendly comments without compromising readability
 
+### セキュリティガイドライン（機密情報の取り扱い）
+
+**CRITICAL**: APIキー、トークン、パスワード等の機密情報は絶対にコードに直接記載しないこと。
+
+#### 禁止事項
+
+| 禁止 | 理由 |
+|------|------|
+| APIキーのハードコーディング | GitHubにプッシュされると漏洩リスク |
+| トークンをコメントに記載 | 履歴に残り削除が困難 |
+| サンプル値に実際のトークン形式を使用 | シークレットスキャニングで検出される |
+
+#### 正しい実装方法
+
+```python
+# ❌ 悪い例: トークンを直接記載
+SLACK_TOKEN = "xoxb-1234567890-xxxxx"
+
+# ✅ 良い例: 環境変数から読み込み
+import os
+SLACK_TOKEN = os.getenv("SLACK_BOT_TOKEN")
+```
+
+#### 環境変数の管理
+
+| ファイル | 用途 | Git管理 |
+|---------|------|---------|
+| `.env` | 実際の認証情報 | ❌ 除外（.gitignore） |
+| `.env.example` | テンプレート（プレースホルダーのみ） | ✅ 含める |
+
+#### .env.example でのサンプル値の記載方法
+
+```bash
+# ❌ 悪い例: トークン形式のサンプル値
+SLACK_BOT_TOKEN=xoxb-1234567890-1234567890123-XXXXXXXX
+
+# ✅ 良い例: 汎用的なプレースホルダー
+SLACK_BOT_TOKEN=your-slack-bot-token-here
+API_KEY=your-api-key-here
+```
+
 ## Git Commit Guidelines
 - Write clear, concise commit messages
 - Use present tense (e.g., "Add feature" not "Added feature")
@@ -47,6 +88,51 @@ git diff --cached --name-only | grep -E '\.(csv|log|jpg|png|jpeg|mp4|avi)$'
 ```
 
 上記コマンドで出力があった場合は、`git reset HEAD <file>` でステージングを解除すること。
+
+### シークレット（機密情報）のコミット前チェック
+
+**CRITICAL**: コミット前に機密情報が含まれていないことを必ず確認すること。
+
+#### チェック対象パターン
+
+| パターン | 説明 |
+|---------|------|
+| `xoxb-`, `xoxp-`, `xoxa-` | Slack APIトークン |
+| `ghp_`, `gho_`, `github_pat_` | GitHub Personal Access Token |
+| `sk-` | OpenAI APIキー |
+| `AKIA` | AWS Access Key ID |
+| `password=`, `secret=` | パスワード・シークレット |
+
+#### 確認コマンド
+
+```bash
+# ステージングされたファイル内のシークレットパターンを検索
+git diff --cached | grep -E '(xoxb-|xoxp-|ghp_|gho_|sk-|AKIA|password=|secret=)'
+
+# より詳細な確認（ファイル名と行番号付き）
+git diff --cached -U0 | grep -E '^\+.*（xoxb-|ghp_|sk-）'
+```
+
+#### シークレットが検出された場合の対処
+
+1. **コミット前に検出**: `git reset HEAD <file>` でステージング解除し、該当箇所を修正
+2. **コミット後に検出**: `git filter-repo` で履歴から完全削除が必要（詳細は下記参照）
+
+#### 履歴からのシークレット削除手順
+
+```bash
+# 置換パターンファイルを作成
+echo "検出されたシークレット==>your-placeholder-here" > /tmp/replacements.txt
+
+# 履歴を書き換え
+git filter-repo --replace-text /tmp/replacements.txt --force
+
+# リモートを再設定してforce push
+git remote add origin <repository-url>
+git push --force origin main
+```
+
+> **警告**: `git filter-repo` は履歴を書き換えるため、他の開発者との同期に注意が必要
 
 ## Testing
 - Write unit tests for new functionality
