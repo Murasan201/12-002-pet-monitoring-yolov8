@@ -308,13 +308,6 @@ def _create_tracker_from_env() -> 'CameraTracker':
     min_bbox_area_ratio = float(os.getenv("MIN_BBOX_AREA_RATIO", "0.01"))
     max_bbox_area_ratio = float(os.getenv("MAX_BBOX_AREA_RATIO", "0.60"))
 
-    # デバッグ: 追跡ログCSV（詳細）とフレーム保存
-    debug_tracking_csv = os.getenv("DEBUG_TRACKING_CSV", "")
-    debug_tracking_csv = debug_tracking_csv.strip() or None
-    debug_save_frames = os.getenv("DEBUG_SAVE_FRAMES", "false").lower() == "true"
-    debug_frames_dir = os.getenv("DEBUG_FRAMES_DIR", "logs/debug_frames")
-    debug_save_every_n = int(os.getenv("DEBUG_SAVE_EVERY_N", "5"))
-
     # 検出対象クラス（優先順位: set_target_classes() > 環境変数 > デフォルト）
     if _target_classes_override is not None:
         target_classes = _target_classes_override
@@ -336,11 +329,6 @@ def _create_tracker_from_env() -> 'CameraTracker':
     logger.info(
         f"  bbox面積比フィルタ: min={min_bbox_area_ratio:.3f}, max={max_bbox_area_ratio:.3f}"
     )
-    if debug_tracking_csv:
-        logger.info(f"  DEBUG_TRACKING_CSV: {debug_tracking_csv}")
-    logger.info(
-        f"  DEBUG_SAVE_FRAMES: {debug_save_frames} (dir={debug_frames_dir}, every_n={debug_save_every_n})"
-    )
 
     return CameraTracker(
         model_path=model_path,
@@ -357,11 +345,7 @@ def _create_tracker_from_env() -> 'CameraTracker':
         min_bbox_area_ratio=min_bbox_area_ratio,
         max_bbox_area_ratio=max_bbox_area_ratio,
         pan_direction=pan_direction,
-        tilt_direction=tilt_direction,
-        debug_tracking_csv=debug_tracking_csv,
-        debug_save_frames=debug_save_frames,
-        debug_frames_dir=debug_frames_dir,
-        debug_save_every_n=debug_save_every_n
+        tilt_direction=tilt_direction
     )
 
 
@@ -404,11 +388,7 @@ class CameraTracker:
         min_bbox_area_ratio: float = 0.01,
         max_bbox_area_ratio: float = 0.60,
         pan_direction: int = 1,
-        tilt_direction: int = 1,
-        debug_tracking_csv: Optional[str] = None,
-        debug_save_frames: bool = False,
-        debug_frames_dir: str = "logs/debug_frames",
-        debug_save_every_n: int = 5
+        tilt_direction: int = 1
     ):
         """
         CameraTrackerの初期化
@@ -436,10 +416,6 @@ class CameraTracker:
         self.max_bbox_area_ratio = max_bbox_area_ratio
         self.pan_direction = 1 if pan_direction >= 0 else -1
         self.tilt_direction = 1 if tilt_direction >= 0 else -1
-        self.debug_tracking_csv = debug_tracking_csv
-        self.debug_save_frames = debug_save_frames
-        self.debug_frames_dir = debug_frames_dir
-        self.debug_save_every_n = max(1, debug_save_every_n)
         # 直近の誤差/制御量（デバッグ画像に焼き込む用）
         self._last_control_debug: Optional[Dict[str, float]] = None
         # 表示用の状態
@@ -464,7 +440,6 @@ class CameraTracker:
         # 直近の検出情報（デバッグ用）
         self._last_best_detection: Optional[Dict[str, Any]] = None
         self._last_detections: List[Dict[str, Any]] = []
-        self._debug_frame_index = 0
 
         # CameraManagerの初期化
         logger.info(f"カメラ初期化中（{frame_width}x{frame_height}）...")
@@ -791,23 +766,9 @@ class CameraTracker:
             csv_file = open(log_csv, 'w', newline='', encoding='utf-8')
             csv_file.write("timestamp,error_x,error_y,delta_pan,delta_tilt,pan_angle,tilt_angle\n")
 
-        # デバッグCSV（詳細）の初期化
-        debug_csv = None
-        if self.debug_tracking_csv:
-            debug_path = Path(self.debug_tracking_csv)
-            debug_path.parent.mkdir(parents=True, exist_ok=True)
-            debug_csv = open(str(debug_path), 'a', newline='', encoding='utf-8')
-            if debug_path.stat().st_size == 0:
-                debug_csv.write(
-                    "ts_iso,mode,class,conf,bbox_x1,bbox_y1,bbox_x2,bbox_y2,"
-                    "cx,cy,center_x,center_y,error_x,error_y,delta_pan,delta_tilt,"
-                    "pan_before,tilt_before,pan_after,tilt_after\n"
-                )
-
         try:
             while True:
                 loop_start = time.time()
-                self._debug_frame_index += 1
                 if tick_callback:
                     try:
                         tick_callback()
@@ -865,20 +826,6 @@ class CameraTracker:
                     # CSVログに記録
                     if csv_file:
                         csv_file.write(f"{time.time()},{error_x},{error_y},{delta_pan},{delta_tilt},{self.current_pan_angle},{self.current_tilt_angle}\n")
-
-                    # デバッグCSVに記録（詳細）
-                    if debug_csv:
-                        ts_iso = datetime.now().isoformat(timespec="milliseconds")
-                        debug_csv.write(
-                            f"{ts_iso},track,{best.get('class_name','')},{float(best.get('confidence',0.0)):.3f},"
-                            f"{x1},{y1},{x2},{y2},{cx},{cy},{center_x:.1f},{center_y:.1f},"
-                            f"{error_x:.1f},{error_y:.1f},{delta_pan:.3f},{delta_tilt:.3f},"
-                            f"{pan_before:.2f},{tilt_before:.2f},{pan_after:.2f},{tilt_after:.2f}\n"
-                        )
-
-                    # デバッグ: フレーム保存（一定間隔 or 大きな誤差時）
-                    if self.debug_save_frames and (self._debug_frame_index % self.debug_save_every_n == 0):
-                        self._save_debug_frame(frame, box, mode="track")
                 else:
                     # 一時的に検出が途切れてもすぐに追跡終了せず、猶予時間までは保持する
                     if (time.time() - last_seen_time) >= max(0.0, float(lost_timeout)):
@@ -906,8 +853,6 @@ class CameraTracker:
         finally:
             if csv_file:
                 csv_file.close()
-            if debug_csv:
-                debug_csv.close()
 
         logger.info("追跡終了")
         return "lost"
@@ -1055,63 +1000,6 @@ class CameraTracker:
         self.current_pan_angle = new_pan_angle
         self.current_tilt_angle = new_tilt_angle
         return new_pan_angle, new_tilt_angle
-
-    def _save_debug_frame(
-        self,
-        frame: np.ndarray,
-        box: Optional[Tuple[int, int, int, int]],
-        mode: str = "track"
-    ) -> None:
-        """
-        デバッグ用にフレーム画像を保存する（bbox/中心/角度などの情報を焼き込み）。
-        """
-        try:
-            save_dir = Path(self.debug_frames_dir) / datetime.now().strftime("%Y%m%d_%H%M%S")
-            save_dir.mkdir(parents=True, exist_ok=True)
-            out = frame.copy()
-            if self._last_detections:
-                out = draw_detections(out, self._last_detections)
-
-            # 追跡対象中心を強調
-            if box is not None:
-                x1, y1, x2, y2 = box
-                cx = (x1 + x2) // 2
-                cy = (y1 + y2) // 2
-                cv2.circle(out, (cx, cy), 6, (0, 0, 255), -1)
-
-            # 画面中心マーカー
-            center_x = int(self.frame_width // 2)
-            center_y = int(self.frame_height // 2)
-            cv2.drawMarker(out, (center_x, center_y), (255, 0, 0), cv2.MARKER_CROSS, 20, 2)
-
-            # テキスト情報
-            best = self._last_best_detection or {}
-            lines = [
-                f"mode={mode}",
-                f"class={best.get('class_name','')} conf={float(best.get('confidence',0.0)):.2f}",
-                f"pan={self.current_pan_angle:.1f} tilt={self.current_tilt_angle:.1f}",
-            ]
-            if self._last_control_debug:
-                d = self._last_control_debug
-                lines.append(
-                    f"err=({d['error_x']:.1f},{d['error_y']:.1f}) "
-                    f"delta=({d['delta_pan']:.2f},{d['delta_tilt']:.2f})"
-                )
-                lines.append(
-                    f"before=({d['pan_before']:.1f},{d['tilt_before']:.1f}) "
-                    f"after=({d['pan_after']:.1f},{d['tilt_after']:.1f})"
-                )
-            y = 20
-            for line in lines:
-                cv2.putText(out, line, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 3)
-                cv2.putText(out, line, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1)
-                y += 18
-
-            ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
-            path = save_dir / f"{mode}_{ts}.jpg"
-            cv2.imwrite(str(path), out, [cv2.IMWRITE_JPEG_QUALITY, 85])
-        except Exception as e:
-            logger.debug(f"debug frame save failed: {e}")
 
     def _display_frame(self, frame: np.ndarray, box: Optional[Tuple[int, int, int, int]]):
         """
