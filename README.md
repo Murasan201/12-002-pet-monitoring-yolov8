@@ -190,6 +190,25 @@ The system will:
 3. Send captured images to Slack at specified intervals (default: 1 hour)
 4. Log all activities to console
 
+### Test Command
+
+For quick testing with verbose output and display:
+
+```bash
+cd /home/pi/work/project/kodansya/12-002-pet-monitoring-yolov8
+source .venv/bin/activate
+LC_ALL=C.UTF-8 LANG=C.UTF-8 \
+TILT_DIRECTION=-1 \
+TRACK_LOST_TIMEOUT=10.0 RESCAN_DELAY_SECONDS=2.0 \
+python3 main.py --display --verbose --classes cat dog person --interval 1
+```
+
+| Environment Variable | Description |
+|---------------------|-------------|
+| `TILT_DIRECTION=-1` | Invert tilt direction for specific mount orientations |
+| `TRACK_LOST_TIMEOUT=10.0` | Time in seconds before considering target lost |
+| `RESCAN_DELAY_SECONDS=2.0` | Delay between rescan attempts |
+
 ### Run as a Service (Optional)
 
 To run the system automatically on boot, create a systemd service:
