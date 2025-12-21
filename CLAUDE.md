@@ -65,6 +65,7 @@ API_KEY=your-api-key-here
 - Write clear, concise commit messages
 - Use present tense (e.g., "Add feature" not "Added feature")
 - Reference issue numbers when applicable
+- **IMPORTANT**: `git push` はユーザーから明示的に指示があった場合のみ実行すること。コミットのみで完了し、プッシュは行わない
 
 ### コミット前の必須チェック項目
 
